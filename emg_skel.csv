@@ -1,0 +1,6 @@
+﻿EMG PATH,SKEL PATH,FRAMES
+M:/Datasets/shock_walk/processed/2_5mph.csv,M:/Datasets/shock_walk/Videos/skeletons/2_5mph.npy,1800
+M:/Datasets/shock_walk/processed/3_1mph.csv,M:/Datasets/shock_walk/Videos/skeletons/3_1mph.npy,1800
+M:/Datasets/shock_walk/processed/Quiet_Stance.csv,M:/Datasets/shock_walk/Videos/skeletons/Quiet_Stance.npy,315
+M:/Datasets/shock_walk/processed/SelfSelected.csv,M:/Datasets/shock_walk/Videos/skeletons/SelfSelected.npy,1800
+M:/Datasets/shock_walk/processed/StandStop_2mph.csv,M:/Datasets/shock_walk/Videos/skeletons/StandStop_2mph.npy,1800
