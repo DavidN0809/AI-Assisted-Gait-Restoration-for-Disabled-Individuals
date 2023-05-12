@@ -5,7 +5,7 @@ This github demonstrates a project for an AI for Biomedical Applications final p
 
 This walking data is all normalized and processed together before being seperated back out into files. This is to allow the data to scale relative to one another. Data was taken at multiple different walking speeds, 2.0mph, 2.5mph, 3.1mph, 5.0mph, 0.0mph. Which after processing is clearly shown in the image below.
 
-![Emg of single muscle](/figures/emg_normalized.PNG)
+![Emg of single muscle](/figures/emg_normalized.png)
 
 This relativity allowed the signal to act as an intensity between 0 - 1 which can be used to set the intensity of potentiometers to deliver the correct intensity of eletrcity for the TENS units to stimulate the leg at. 
 
@@ -15,7 +15,7 @@ This relativity allowed the signal to act as an intensity between 0 - 1 which ca
 
 An LSTM model was selected for its capacity to understand temporal data across long-term movements, such as a gait pattern, and their fine movement understanding for balancing and such. This model was particularly useful in the prediction of EMG to EMG signal data where having access to a live stream of data can accurately inference to send correct signals. The model used had a feature size of 28, a hidden size of 128, five layers, and an output size corresponding to the number of future time steps to predict, ten in this case.
 
-![LSTM Training](/figures/training_loss.PNG)
+![LSTM Training](/figures/training_loss.png)
 ![LSTM Ground and Predicted](/figures/Pred_Ground.PNG)
 
 To utilize the pose information of the data set, two additional networks were explored Graph Convolution Networks and 3D Convolution Networks. The GCN has the ability to better capture information and the structure of a human pose. This can provide additional improvements in the mapping of pose to EMG data. As a baseline, however, a 3D Convolution Network was generated to better understand the temporal understanding of the movement over time during a sequence of frames. Neither model was able to train, however, likely due to a lack of data and a lack of available time for implementation. Future research would pretain to use these more advanced models to understand the characteristics of pose to EMG data.
@@ -30,7 +30,7 @@ Next install pytorch, torchvision with your correct version of cuda or cpu
 
 # Usage
 
-![Original Plan on Black Board](/git_images/original_plan.PNG)
+![Original Plan on Black Board](/git_images/original_plan.jpg)
 
 All data is currently stored in the repository except for the video data, however this and the csvs will be moved to a different downloadable location. 
 
@@ -40,7 +40,7 @@ Next enter the training folder to view the LSTM training file. This will be used
 
 Finally to test the LSTM connect an ardunio to your computer and set the following arduino code to run on your board setup to control your tens units or any other device you might have. Then run the test_signal file, ensure you select the correct usb serial connection before running. 
 
-![Board](/git_images/board.jpg)
+![Board](/git_images/Board.jpg)
 
 # Additional Information
 Project was developed on Python 3.10 with windows 10
