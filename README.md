@@ -30,7 +30,7 @@ Next install pytorch, torchvision with your correct version of cuda or cpu
 
 # Usage
 
-![Original Plan on Black Board](/git_images/original_plan.jpg)
+![Original Plan on Black Board](/figures/original_plan.jpg)
 
 All data is currently stored in the repository except for the video data, however this and the csvs will be moved to a different downloadable location. 
 
@@ -40,7 +40,7 @@ Next enter the training folder to view the LSTM training file. This will be used
 
 Finally to test the LSTM connect an ardunio to your computer and set the following arduino code to run on your board setup to control your tens units or any other device you might have. Then run the test_signal file, ensure you select the correct usb serial connection before running. 
 
-![Board](/git_images/Board.jpg)
+![Board](/figures/Board.jpg)
 
 # Additional Information
 Project was developed on Python 3.10 with windows 10
