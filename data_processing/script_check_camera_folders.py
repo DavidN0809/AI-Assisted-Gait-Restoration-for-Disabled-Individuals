@@ -1,4 +1,4 @@
-  GNU nano 4.8                                      script_check_cams.py                                                import os
+import os
 
 def check_empty_or_missing_cameras(base_path):
     actions = ["steps", "treadmill", "walk and turn left", "walk and turn right"]
