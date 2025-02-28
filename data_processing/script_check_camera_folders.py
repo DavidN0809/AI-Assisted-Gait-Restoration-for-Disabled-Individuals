@@ -15,8 +15,8 @@ def check_empty_or_missing_cameras(base_path):
                         camera_path = os.path.join(action_path, camera)
                         if not os.path.isdir(camera_path) or len(os.listdir(camera_path)) == 0:
                             missing_or_empty.append(camera)
-
+                    
                     if missing_or_empty:
-                        print(f"UUID: {uuid_dir}, action: {action} - missing or empty camera(s): {', '.join(missing_or_>
+                        print(f"UUID: {uuid_dir}, action: {action} - missing or empty camera(s): {', '.join(missing_or_empty)}")
 
 check_empty_or_missing_cameras("data")
