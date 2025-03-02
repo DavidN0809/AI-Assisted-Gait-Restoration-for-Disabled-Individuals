@@ -1,0 +1,24 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Preprocess",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./data_processing/preprocessing.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+        },
+        {
+            "name": "Check Data",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./data_processing/script_check_camera_folders.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+        }
+    ]
+}
