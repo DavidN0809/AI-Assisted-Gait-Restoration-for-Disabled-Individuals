@@ -2,15 +2,38 @@ import os
 import numpy as np
 import pandas as pd
 import logging
-from datetime import datetime
-from matplotlib import pyplot as plt
+import functools
 from sklearn.preprocessing import MinMaxScaler
 import scipy.signal as signal
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
+# Define custom VERBOSE logging level (most detailed).
+VERBOSE_LEVEL_NUM = 5
+logging.addLevelName(VERBOSE_LEVEL_NUM, "VERBOSE")
+
+def verbose(self, message, *args, **kwargs):
+    if self.isEnabledFor(VERBOSE_LEVEL_NUM):
+        self._log(VERBOSE_LEVEL_NUM, message, args, **kwargs)
+
+# Attach the verbose method to the Logger class.
+logging.Logger.verbose = verbose
+
+# Set up logging with default level DEBUG.
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
+
+# Create a global logger instance.
+logger = logging.getLogger(__name__)
+
+# Decorator for logging function entry and exit at verbose level.
+def log_entry_exit(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        logger.verbose(f"Entering {func.__name__}")
+        result = func(*args, **kwargs)
+        logger.verbose(f"Exiting {func.__name__}")
+        return result
+    return wrapper
 
 def find_csv_files(base_path):
     """Recursively finds CSV files in the directory structure."""
@@ -22,14 +45,14 @@ def find_csv_files(base_path):
     return csv_files
 
 def resample_data(df, target_fs, original_fs):
-    # Use the 'time' column (after renaming) for resampling.
+    # Use the 'time' column for resampling.
     original_time = df['time'].astype(float).values
     t_start = original_time[0]
     t_end = original_time[-1]
     original_length = len(df)
     target_length = int(round(original_length * target_fs / original_fs))
     
-    # Create a new uniformly spaced time vector and start new DataFrame with it.
+    # Create a new uniformly spaced time vector and new DataFrame with it.
     new_time = np.linspace(t_start, t_end, target_length)
     df_resampled = pd.DataFrame({'time': new_time})
     
@@ -42,14 +65,14 @@ def resample_data(df, target_fs, original_fs):
             resampled_data = signal.resample(data, target_length)
             df_resampled[col] = resampled_data
         except Exception as e:
-            logging.warning(f"Skipping column '{col}' during resampling: {e}")
+            logger.warning(f"Skipping column '{col}' during resampling: {e}")
             df_resampled[col] = df[col]
     return df_resampled
 
 def safe_filtfilt(b, a, data):
     padlen = 3 * (max(len(a), len(b)) - 1)
     if len(data) <= padlen:
-        logging.warning("Data length too short for filtfilt. Skipping filtering for this signal.")
+        logger.warning("Data length too short for filtfilt. Skipping filtering for this signal.")
         return data
     return signal.filtfilt(b, a, data)
 
@@ -86,11 +109,18 @@ def extract_fs(sensor_name):
         return max(freqs)
     return None
 
-def fix_sensor_columns(df, expected_range):
+@log_entry_exit
+def fix_sensor_columns(df, expected_range, log_renames=False):
     """
     Renames sensor columns so that sensors outside the expected range are re-assigned
     to a missing sensor slot consistently.
+    
+    Returns:
+      - If log_renames is False (default): the modified DataFrame.
+      - If log_renames is True: a tuple (DataFrame, renames) where renames is a list of tuples:
+            (old_sensor, new_sensor, [list of affected columns])
     """
+    renames = []
     extra_sensors = {}
     for col in df.columns:
         if any(k in str(col).upper() for k in ["EMG", "ACC", "GYRO"]):
@@ -111,13 +141,17 @@ def fix_sensor_columns(df, expected_range):
     for extra_sensor, cols in extra_sensors.items():
         if missing:
             new_sensor = missing.pop(0)
+            if log_renames:
+                renames.append((extra_sensor, new_sensor, cols))
             for col in cols:
                 new_col = re.sub(r"(sensor\s*)\d+", r"\g<1>" + str(new_sensor), col, flags=re.IGNORECASE)
-                logging.info(f"Renaming sensor in column '{col}': {extra_sensor} -> {new_sensor}")
                 df.rename(columns={col: new_col}, inplace=True)
         else:
-            for col in cols:
-                logging.info(f"No missing sensor slot available for column '{col}' with sensor {extra_sensor}")
+            if log_renames:
+                for col in cols:
+                    renames.append((extra_sensor, None, [col]))
+    if log_renames:
+        return df, renames
     return df
 
 def sensor_present(df, sensor_num):
@@ -127,6 +161,136 @@ def sensor_present(df, sensor_num):
             if f"SENSOR {sensor_num}" in str(col).upper():
                 return True
     return False
+
+@log_entry_exit
+def check_valid_file(file):
+    """
+    Reads and validates a CSV file.
+    Returns a tuple (file, df) if valid; otherwise returns None.
+    """
+    try:
+        df = pd.read_csv(file, header=None, low_memory=False)
+    except Exception as e:
+        logger.error(f"Error reading {file}: {e}")
+        return None
+
+    # Use the first row as header and drop it from data.
+    df.columns = df.iloc[0]
+    df = df.drop(0, axis=0).reset_index(drop=True)
+    # Convert all column names to strings and strip whitespace.
+    df.columns = df.columns.astype(str).str.strip()
+    
+    # Fix sensor columns (without verbose logging during validation).
+    df = fix_sensor_columns(df, expected_range)
+    
+    # Check that every expected sensor (0–5) is present.
+    for num in expected_range:
+        if not sensor_present(df, num):
+            logger.info(f"File '{file}' is missing sensor {num}.")
+            return None
+    return (file, df)
+
+# Global cache: mapping file path to its validated DataFrame.
+valid_files_data = {}
+
+@log_entry_exit
+def process_stage(stage):
+    processed_files = []
+    # Iterate over the cached valid files.
+    with ThreadPoolExecutor(max_workers=threads_per_stage) as executor:
+        futures = {executor.submit(process_file, file, stage): file for file in valid_files_data}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                processed_files.append(result)
+    return stage, processed_files
+
+@log_entry_exit
+def process_file(file, stage):
+    """
+    Process a single file based on the chosen stage:
+      - stage "preprocessed": sensor columns fixed only.
+      - stage "preprocessed_resampled": sensor fix + resampling.
+      - stage "preprocessed_butterworth": sensor fix + resampling + filtering.
+    
+    Uses the cached DataFrame (copied so the original remains unchanged).
+    """
+    try:
+        logger.debug(f"Starting processing of file: {file} for stage: {stage}")
+        # Use the cached DataFrame and work on a copy.
+        df = valid_files_data[file].copy()
+
+        # Ensure column names are strings (in case they changed in cache).
+        df.columns = df.columns.astype(str).str.strip()
+
+        # Remove extra time columns (e.g., "time 1", "time 2", etc.)
+        time_cols_to_drop = [col for col in df.columns 
+                             if str(col).strip().lower().startswith('time') and str(col).strip().lower() != 'time 0']
+        if time_cols_to_drop:
+            df.drop(columns=time_cols_to_drop, inplace=True)
+        # Rename "time 0" to "time"
+        df.rename(columns={'time 0': 'time'}, inplace=True)
+        
+        df['time'] = pd.to_numeric(df['time'], errors='coerce')
+        df.fillna(0, inplace=True)
+        # Fix sensor columns and collect renaming info.
+        df, renames = fix_sensor_columns(df, expected_range, log_renames=True)
+        
+        # Identify sensor columns.
+        sensor_cols = [col for col in df.columns if any(k in str(col).upper() for k in ["EMG", "ACC", "GYRO"])]
+        
+        # Stage-dependent processing.
+        if stage == "preprocessed":
+            processed_df = df.copy()
+        else:
+            # Determine original sampling frequency.
+            freqs = []
+            for col in sensor_cols:
+                fs_extracted = extract_fs(str(col))
+                if fs_extracted:
+                    freqs.append(fs_extracted)
+            if freqs:
+                original_fs = min(freqs)
+            else:
+                time_diffs = np.diff(df['time'].dropna().astype(float))
+                original_fs = 1 / np.median(time_diffs) if len(time_diffs) > 0 else 1000
+
+            processed_df = resample_data(df, target_fs=original_fs, original_fs=original_fs)
+            
+            if stage == "preprocessed_butterworth":
+                processed_df = apply_filter(processed_df, sensor_cols, order=4, cutoff=[10], fs=original_fs, filter_band='low')
+                processed_df = apply_notch(processed_df, sensor_cols, notch_freq=60, fs=original_fs, Q=30)
+                processed_df.interpolate(method='linear', inplace=True)
+            
+            scaler = MinMaxScaler()
+            processed_df = pd.DataFrame(scaler.fit_transform(processed_df), columns=processed_df.columns)
+        
+        # Determine output subfolder structure based on relative path.
+        relative_path = os.path.relpath(file, base_dir)
+        relative_dir = os.path.dirname(relative_path)
+        if relative_dir:
+            fixed_relative_dir = os.path.join(*[part.replace(" ", "_") for part in relative_dir.split(os.sep)])
+        else:
+            fixed_relative_dir = ""
+        output_path = os.path.join(base_dir, stage, fixed_relative_dir)
+        os.makedirs(output_path, exist_ok=True)
+        output_filename = os.path.join(output_path, os.path.basename(file))
+        
+        processed_df.to_csv(output_filename, index=False)
+        logger.info(f"Processed and saved [{stage}]: {output_filename}")
+        
+        # Log renaming info as concise verbose output.
+        for old_sensor, new_sensor, cols in renames:
+            if new_sensor is not None:
+                logger.verbose(f"for {relative_path} renamed sensor {old_sensor} to sensor {new_sensor}")
+            else:
+                logger.verbose(f"for {relative_path} sensor {old_sensor} had no available slot for renaming")
+        
+        logger.debug(f"Finished processing of file: {file} for stage: {stage}")
+        return output_filename
+    except Exception as e:
+        logger.error(f"Error processing {file} for stage {stage}: {e}")
+        return None
 
 # Base directory where raw CSVs are stored.
 base_dir = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
@@ -138,107 +302,41 @@ if not csv_files:
 expected_range = set(range(0, 6))
 expected_sensors = [f"sensor {i}" for i in range(0, 6)]
 
-def check_valid_file(file):
-    try:
-        df = pd.read_csv(file, header=None, low_memory=False)
-    except Exception as e:
-        logging.error(f"Error reading {file}: {e}")
-        return None
-
-    # Use the first row as header.
-    df.columns = df.iloc[0]
-    df = df.drop(0, axis=0).reset_index(drop=True)
-    df = fix_sensor_columns(df, expected_range)
-
-    # Check that every expected sensor (0–5) is present.
-    for num in expected_range:
-        if not sensor_present(df, num):
-            logging.info(f"File '{file}' is missing sensor {num}.")
-            return None
-    return file
-
-# Validate files concurrently.
-valid_files = []
+# Validate files concurrently and cache the valid data.
 with ThreadPoolExecutor() as executor:
     futures = {executor.submit(check_valid_file, file): file for file in csv_files}
     for future in as_completed(futures):
         result = future.result()
         if result:
-            valid_files.append(result)
-logging.info(f"Found {len(valid_files)} valid files out of {len(csv_files)} total CSVs.")
+            file, df = result
+            valid_files_data[file] = df
+logger.info(f"Found {len(valid_files_data)} valid files out of {len(csv_files)} total CSVs.")
 
-# Create a directory for preprocessed files.
-preprocessed_dir = os.path.join(base_dir, "preprocessed")
-os.makedirs(preprocessed_dir, exist_ok=True)
-preprocessed_file_list = []
+# Define stages.
+stages = ["preprocessed", "preprocessed_resampled", "preprocessed_butterworth"]
 
-def process_file(file):
-    try:
-        df = pd.read_csv(file, header=0, low_memory=False)
-        df.columns = df.columns.str.strip()
+# Calculate available cores.
+reserved_cores = 2
+total_cores = os.cpu_count() or 4  # default to 4 if unable to detect
+usable_cores = total_cores - reserved_cores
 
-        # Remove extra time columns (e.g., "time 1", "time 2", etc.)
-        time_cols_to_drop = [col for col in df.columns 
-                             if col.strip().lower().startswith('time') and col.strip().lower() != 'time 0']
-        if time_cols_to_drop:
-            df.drop(columns=time_cols_to_drop, inplace=True)
-        # Rename "time 0" to "time"
-        df.rename(columns={'time 0': 'time'}, inplace=True)
-        
-        df['time'] = pd.to_numeric(df['time'], errors='coerce')
-        df.fillna(0, inplace=True)
-        df = fix_sensor_columns(df, expected_range)
-        
-        # Identify sensor columns.
-        sensor_cols = [col for col in df.columns if any(k in str(col).upper() for k in ["EMG", "ACC", "GYRO"])]
-        
-        # Determine original sampling frequency.
-        freqs = []
-        for col in sensor_cols:
-            fs_extracted = extract_fs(str(col))
-            if fs_extracted:
-                freqs.append(fs_extracted)
-        if freqs:
-            original_fs = min(freqs)
-        else:
-            time_diffs = np.diff(df['time'].dropna().astype(float))
-            original_fs = 1 / np.median(time_diffs) if len(time_diffs) > 0 else 1000
-        
-        # Resample data using the original sampling frequency.
-        df = resample_data(df, target_fs=original_fs, original_fs=original_fs)
-        
-        # Apply Butterworth low-pass filter and notch filter.
-        df = apply_filter(df, sensor_cols, order=4, cutoff=[10], fs=original_fs, filter_band='low')
-        df = apply_notch(df, sensor_cols, notch_freq=60, fs=original_fs, Q=30)
-        df.interpolate(method='linear', inplace=True)
-        
-        # Scale ALL columns using MinMaxScaler.
-        scaler = MinMaxScaler()
-        df = pd.DataFrame(scaler.fit_transform(df), columns=df.columns)
-        
-        # Determine output subfolder structure based on relative path.
-        relative_path = os.path.relpath(file, base_dir)
-        output_path = os.path.join(preprocessed_dir, os.path.dirname(relative_path))
-        os.makedirs(output_path, exist_ok=True)
-        output_filename = os.path.join(output_path, os.path.basename(file))
-        
-        df.to_csv(output_filename, index=False)
-        logging.info(f"Processed and saved: {output_filename}")
-        return output_filename
-    except Exception as e:
-        logging.error(f"Error processing {file}: {e}")
-        return None
+# Option 1: Allocate cores equally among stages.
+threads_per_stage = max(1, usable_cores // len(stages))
+# Option 2: You can set threads_per_stage to a fixed number, e.g., 2
 
-# Process files concurrently.
-with ThreadPoolExecutor() as executor:
-    futures = {executor.submit(process_file, file): file for file in valid_files}
-    for future in as_completed(futures):
-        result = future.result()
-        if result:
-            preprocessed_file_list.append(result)
+print(f"Total cores: {total_cores}, reserved: {reserved_cores}, threads per stage: {threads_per_stage}")
 
-# Create an index CSV file at the top level of the preprocessed directory.
-index_file = os.path.join(preprocessed_dir, "index.csv")
-df_index = pd.DataFrame({"file_path": preprocessed_file_list})
-df_index.to_csv(index_file, index=False)
-logging.info(f"Index file saved: {index_file}")
+# Run each stage concurrently.
+processed_files_by_stage = {}
+with ThreadPoolExecutor(max_workers=len(stages)) as stage_executor:
+    stage_futures = {stage_executor.submit(process_stage, stage): stage for stage in stages}
+    for future in as_completed(stage_futures):
+         stage, files = future.result()
+         processed_files_by_stage[stage] = files
+
+# Optionally, create an index CSV for each stage.
+for stage, file_list in processed_files_by_stage.items():
+    index_file = os.path.join(stage, "index.csv")
+    df_index = pd.DataFrame({"file_path": file_list})
+    df_index.to_csv(index_file, index=False)
+    logger.info(f"Index file saved for {stage}: {index_file}")
