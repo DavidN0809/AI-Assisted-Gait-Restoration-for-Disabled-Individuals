@@ -1,6 +1,6 @@
 import os
 
-root_folder = 'data/'
+root_folder = '/data1/dnicho26/EMG_DATASET/data'
 actions = ['treadmill', 'walk and turn left', 'walk and turn right', 'steps']
 
 for user_id in os.listdir(root_folder):

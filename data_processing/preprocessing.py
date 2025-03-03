@@ -293,7 +293,8 @@ def process_file(file, stage):
         return None
 
 # Base directory where raw CSVs are stored.
-base_dir = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
+#base_dir = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
+base_dir="/data1/dnicho26/EMG_DATASET/data"
 csv_files = find_csv_files(base_dir)
 if not csv_files:
     raise ValueError("No CSV files found.")
