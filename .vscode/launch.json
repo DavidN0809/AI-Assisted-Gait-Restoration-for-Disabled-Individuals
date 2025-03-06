@@ -19,6 +19,23 @@
             "program": "./data_processing/script_check_camera_folders.py",
             "console": "integratedTerminal",
             "justMyCode": false,
+        },
+        {
+            "name": "Skeleton",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./data_processing/skeleton.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+        },
+        {
+            "name": "LSTM",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "training.lstm",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "justMyCode": false
         }
     ]
 }
