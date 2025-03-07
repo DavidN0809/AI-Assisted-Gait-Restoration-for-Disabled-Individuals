@@ -95,7 +95,6 @@ class ModelTrainer:
             #     labels = labels.reshape(-1, 1)
             labels = labels.to(self.device)
             
-            
             # Model makes prediction which is passed into a loss function
             pred = self.model(data)
             loss_val = self.Loss_Function(self.flat(pred), self.flat(labels))
@@ -234,7 +233,7 @@ class ModelTrainer:
         self.Metrics["Test Loss"] = totalLoss/len(testLoader)
 
         
-    
+
     # Show representations of model metrics
     def Graph_Metrics(self):
         

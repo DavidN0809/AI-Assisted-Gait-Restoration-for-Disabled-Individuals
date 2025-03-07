@@ -303,14 +303,15 @@ def update_index(stage, file_list=None):
         # Check if file already exists in the index.
         if file not in df_index["file_path"].values:
             new_row = {"file_path": file, "FRAMES": frames, "uuid": file_uuid, "action": file_action}
-            df_index = df_index.append(new_row, ignore_index=True)
-            logger.info(f"(INDEX) Added new file to index: {file}, uuid is {file_uuid}, action is {file_action}")
+            new_row_df = pd.DataFrame([new_row])
+            df_index = pd.concat([df_index, new_row_df], ignore_index=True)
+            logger.info(f"Stage: {stage} (INDEX) Added new file to index: {file}, uuid is {file_uuid}, action is {file_action}")
         else:
             idx = df_index.index[df_index["file_path"] == file][0]
             df_index.at[idx, "FRAMES"] = frames
             df_index.at[idx, "uuid"] = file_uuid
             df_index.at[idx, "action"] = file_action
-            logger.info(f"(INDEX) Added new file to index: {file}, uuid is {file_uuid}, action is {file_action}")
+            logger.info(f"Stage: {stage} (INDEX) Added new file to index: {file}, uuid is {file_uuid}, action is {file_action}")
 
     df_index.to_csv(index_file, index=False)
     logger.info(f"Index file saved for {stage}: {index_file}")
@@ -330,21 +331,26 @@ reserved_cores = 4
 usable_cores = max(1, total_cores - reserved_cores)
 logger.info(f"Total cores: {total_cores}, reserved: {reserved_cores}, usable: {usable_cores}")
 
-# Always validate files concurrently.
-with ThreadPoolExecutor(max_workers=usable_cores) as executor:
-    futures = {executor.submit(check_valid_file, file): file for file in csv_files}
-    for future in as_completed(futures):
-        result = future.result()
-        if result:
-            file, df = result
-            valid_files_data[file] = df
-logger.info(f"Found {len(valid_files_data)} valid files out of {len(csv_files)} total CSVs.")
+# Define processing stages.
+stages = ["preprocessed", "preprocessed_resampled", "preprocessed_butterworth"]
+threads_per_stage = max(1, usable_cores // len(stages))
+logger.info(f"Threads per stage: {threads_per_stage}")
+
 
 if not INDEX_ONLY:
     # Define processing stages.
     stages = ["preprocessed", "preprocessed_resampled", "preprocessed_butterworth"]
     threads_per_stage = max(1, usable_cores // len(stages))
     logger.info(f"Threads per stage: {threads_per_stage}")
+    # Always validate files concurrently.
+    with ThreadPoolExecutor(max_workers=usable_cores) as executor:
+        futures = {executor.submit(check_valid_file, file): file for file in csv_files}
+        for future in as_completed(futures):
+            result = future.result()
+            if result:
+                file, df = result
+                valid_files_data[file] = df
+    logger.info(f"Found {len(valid_files_data)} valid files out of {len(csv_files)} total CSVs.")
 
     processed_files_by_stage = {}
     # Limit the number of stage threads as well.
@@ -362,5 +368,5 @@ else:
     stages = ["preprocessed", "preprocessed_resampled", "preprocessed_butterworth"]
     validated_files = list(valid_files_data.keys())
     for stage in stages:
-        update_index(stage, file_list=validated_files)
+        update_index(stage)
 
