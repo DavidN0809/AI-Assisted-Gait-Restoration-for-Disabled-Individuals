@@ -4,6 +4,36 @@ conda activate EMG
 screen -dmS lstm_training bash -c "python -m training.lstm.py > output.txt 2>&1"
 ```
 
+# Sync data from dropbox
+Uses rclone
+setup a remote via
+```
+rclone config
+```
+select new remove via n
+create a name, I used dropbox, if you use a different name modify the script
+then enter 13 for dropbox
+press enter twice for oath to be left blank
+then press enter twice again to use auto configs
+
+run the followin to get the IP of the server
+```
+ip a
+```
+then run this command on your local machine, replace "10.16.30.120" with the ip
+
+```
+ ssh -L 53682:127.0.0.1:53682 dnicho26@10.16.30.120
+```
+then copy the link from rclone config to your brwoser and sign in,
+cntrl + c to close the ssh tunnel
+
+then either use the sync scripts, or mount it like below
+```
+rclone mount dropbox:/orgs-ecgr-QuantitativeImagingandAILaboratory /data1/dnicho26/EMG_DATASET/data --daemon -vv
+
+```
+
 
 This github demonstrates a project for an AI for Biomedical Applications final project. The idea was to send signals to one leg based off the location and signals read from the other leg. This can be used to restore gait for inviduals who may have nerve damage or other forms for physical disablities to correct their walk. This was preformed by taking 1.5 hours of walking data on two health indivudals using an EMG device which recorded eight muscle groups of each main muscle group as well as the acceleration of the sensor.
 
