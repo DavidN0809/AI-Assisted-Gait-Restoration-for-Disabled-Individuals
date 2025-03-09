@@ -44,7 +44,8 @@ def train_test_model(model, lr, trainLoader, validateLoader, testLoader, EPOCHS,
 
 if __name__ == '__main__':
 
-    file_path = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory\preprocessed\index.csv"
+#    file_path = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory\preprocessed\index.csv"
+    file_path = "/data1/dnicho26/EMG_DATASET/data/preprocessed/index.csv"
     # Split dataset into training, validation, and test sets.
     batch_size = 12
     lag=30

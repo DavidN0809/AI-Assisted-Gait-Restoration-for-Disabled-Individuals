@@ -1,4 +1,10 @@
 # AI-Assisted-Gait-Restoration-for-Disabled-Individuals
+```
+conda activate EMG
+screen -dmS lstm_training bash -c "python -m training.lstm.py > output.txt 2>&1"
+```
+
+
 This github demonstrates a project for an AI for Biomedical Applications final project. The idea was to send signals to one leg based off the location and signals read from the other leg. This can be used to restore gait for inviduals who may have nerve damage or other forms for physical disablities to correct their walk. This was preformed by taking 1.5 hours of walking data on two health indivudals using an EMG device which recorded eight muscle groups of each main muscle group as well as the acceleration of the sensor.
 
 ![Main live demonstration](/figures/demonstration.gif)
