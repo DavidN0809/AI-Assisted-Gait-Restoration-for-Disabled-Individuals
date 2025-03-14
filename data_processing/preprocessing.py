@@ -3,14 +3,13 @@ import numpy as np
 import pandas as pd
 import logging
 import functools
-import uuid
 from sklearn.preprocessing import MinMaxScaler
 import scipy.signal as signal
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Set this flag to True to skip processing and just build the index files.
-INDEX_ONLY = True
+INDEX_ONLY = False
 
 base_dir = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
 # base_dir = "/data1/dnicho26/EMG_DATASET/data"

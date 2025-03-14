@@ -45,8 +45,8 @@ def train_test_model(model, lr, trainLoader, validateLoader, testLoader, EPOCHS,
 
 if __name__ == '__main__':
 
-#    file_path = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory\preprocessed\index.csv"
-    file_path = "/data1/dnicho26/EMG_DATASET/data/preprocessed/index.csv"
+    file_path = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory\preprocessed\index.csv"
+    #file_path = "/data1/dnicho26/EMG_DATASET/data/preprocessed/index.csv"
     # Split dataset into training, validation, and test sets.
     batch_size = 12
     lag=30
@@ -60,7 +60,7 @@ if __name__ == '__main__':
     num_layers = 5
     #output_size = dataset.n_ahead  # Typically, the forecast horizon.
     output_size = 21
-    epochs=300
+    epochs=2
     lr=0.00007
 
     # Create the dataset. Update the path to your index CSV as needed.
