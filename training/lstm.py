@@ -23,12 +23,24 @@ print("Using device:", device)
 index = r'/data1/dnicho26/EMG_DATASET/processed/index.csv'
 lag = 30
 n_ahead = 10
-batch_size = 1024
-epochs = 1
+batch_size = 12
+epochs = 100
 lr = 0.00007
 hidden_size = 128
 num_layers = 5
 output_size = 3  # Always predict 3 channels (target leg EMG)
+# Ensure checkpoint directory exists
+checkpoint_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/models/checkpoints"
+os.makedirs(checkpoint_dir, exist_ok=True)
+
+# Save test loss and validation loss to a file
+log_file = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/logs/loss_summary.txt"
+os.makedirs(os.path.dirname(log_file), exist_ok=True)  # Ensure the logs directory exists
+
+
+# Ensure trained models directory exists
+trained_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/models/trained"
+os.makedirs(trained_dir, exist_ok=True)
 
 # Define input configurations and corresponding sizes
 input_configs = ["all", "emg", "acc", "gyro"]
@@ -41,7 +53,6 @@ for input_mode in input_configs:
     print("Training model with input configuration:", input_mode)
     
     dataset = EMG_dataset(index, lag=lag, n_ahead=n_ahead,
-                          input_leg="right", target_leg="left",
                           input_sensor=input_mode, target_sensor="emg",
                           )
     
@@ -67,10 +78,6 @@ for input_mode in input_configs:
     trainer = ModelTrainer(
         model, criterion, optimizer, None, "Regression", device, noPrint=False, flatten_output=False
     )
-        
-    # Ensure checkpoint directory exists
-    checkpoint_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/checkpoints"
-    os.makedirs(checkpoint_dir, exist_ok=True)
 
     checkpoint_path = os.path.join(checkpoint_dir, f"model_{input_mode}.pth")
     start_epoch = 0
@@ -94,6 +101,11 @@ for input_mode in input_configs:
     }, checkpoint_path)
     print(f"Checkpoint saved to {checkpoint_path}")
     
+    model_save_path = os.path.join(trained_dir, f"model_{input_mode}.pt")
+    torch.save(model.state_dict(), model_save_path)
+    print(f"Trained model saved to {model_save_path}")
+
+
     trainer.Test_Model(testLoader)
     print("\nInput config:", input_mode, "Test Loss:", trainer.Metrics["Test Loss"], "Training Time:", t1 - t0)
     trainer.Graph_Metrics(save_path=f"/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/figures/training/metrics_{input_mode}.png")
@@ -120,10 +132,6 @@ for input_mode in input_configs:
 print("\nSummary of Experiments:")
 for mode in results:
     print(f"Input config: {mode}, Test Loss: {results[mode]['Test Loss']}")
-
-# Save test loss and validation loss to a file
-log_file = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/logs/loss_summary.txt"
-os.makedirs(os.path.dirname(log_file), exist_ok=True)  # Ensure the logs directory exists
 
 with open(log_file, "w") as f:
     f.write("Summary of Experiments:\n")

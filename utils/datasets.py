@@ -6,7 +6,6 @@ from tqdm import tqdm
 
 class EMG_dataset(torch.utils.data.Dataset):
     def __init__(self, index_csv, lag, n_ahead, 
-                 input_leg="right", target_leg="left", 
                  input_sensor="all", target_sensor="emg"):
         """
         Args:
@@ -27,7 +26,10 @@ class EMG_dataset(torch.utils.data.Dataset):
         
         sensor_data_path = df_index["emg_file"].iloc[0]
         df_sensor = pd.read_csv(sensor_data_path)
-        
+        print("DataFrame shape:", df_sensor.shape)
+        print("Columns:", df_sensor.columns.tolist())
+
+
         # Drop the first column (assumed to be an index) if necessary.
         df_sensor = df_sensor.iloc[:, 1:]
         
@@ -53,8 +55,7 @@ class EMG_dataset(torch.utils.data.Dataset):
             
             cols = []
             for s in sensors:
-                # Calculate base index: after the "time" column, each sensor block is 7 columns.
-                base = 1 + s * 7  
+                base = 1 + s * 7  # Adjust according to your CSV structure
                 if sensor_type.lower() == "emg":
                     cols.append(base)
                 elif sensor_type.lower() == "acc":
@@ -65,24 +66,30 @@ class EMG_dataset(torch.utils.data.Dataset):
                     cols.extend(list(range(base, base + 7)))
                 else:
                     raise ValueError("Sensor type must be one of 'all', 'emg', 'acc', or 'gyro'.")
+            print(f"For leg {leg} and sensor {sensor_type}, computed columns: {cols}")
             return cols
-        
-        self.input_channels = get_sensor_cols(input_leg, input_sensor)
-        self.target_channels = get_sensor_cols(target_leg, target_sensor)
+
+        self.input_channels = get_sensor_cols("right", input_sensor)
+        self.target_channels = get_sensor_cols("left", target_sensor)
+    
 
     def __len__(self):
         return self.num_samples
-
+        
     def __getitem__(self, idx):
-        # Get input and target windows.
         Input_window = self.data[idx: idx + self.lag, :]
         Target_window = self.data[idx + self.lag: idx + self.lag + self.n_ahead, :]
+
+        # Debug: Check max indices
+        max_input_index = max(self.input_channels)
+        max_target_index = max(self.target_channels)
+        num_columns = self.data.shape[1]
+        #print("Max input index:", max_input_index, "Max target index:", max_target_index, "Number of columns:", num_columns)
         
-        # Select channels based on configuration.
+        assert max_input_index < num_columns, "Input channel index out of bounds!"
+        assert max_target_index < num_columns, "Target channel index out of bounds!"
+
         Input = Input_window[:, self.input_channels]
         Target = Target_window[:, self.target_channels]
-        
-        # Convert to torch tensors.
-        Input = torch.tensor(Input, dtype=torch.float32)
-        Target = torch.tensor(Target, dtype=torch.float32)
-        return Input, Target
+
+        return torch.tensor(Input, dtype=torch.float32), torch.tensor(Target, dtype=torch.float32)
