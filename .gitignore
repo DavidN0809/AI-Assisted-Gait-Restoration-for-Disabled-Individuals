@@ -3,3 +3,5 @@
 .git/
 __pycache__/
 datasets/
+checkpoints/
+logs/

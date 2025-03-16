@@ -49,7 +49,7 @@ def load_npy_files(base_dir):
         # Compute the relative path to extract UUID, action, and camera folder.
         relative_path = os.path.relpath(file_path, base_dir)
         path_parts = relative_path.split(os.sep)
-        
+
         # We expect at least three levels: UUID/action/camera_x/<file>
         if len(path_parts) < 3:
             logger.warning(f"File {file_path} does not match expected structure UUID/action/camera_x")
@@ -58,8 +58,13 @@ def load_npy_files(base_dir):
         uuid = path_parts[0]
         action = path_parts[1]
         camera_folder = path_parts[2]  # e.g., "camera_0", "camera_1", etc.
-        
-        # Optionally extract camera index from the folder name (if present).
+
+        # Extract timestamp from filename (remove .npy extension)
+        filename = os.path.basename(file_path)
+        timestamp_match = re.search(r"(\d+)\.npy$", filename)
+        timestamp = int(timestamp_match.group(1)) if timestamp_match else None
+
+        # Extract camera index from folder name (if present)
         camera_match = re.search(r"camera_(\d+)", camera_folder, re.IGNORECASE)
         folder_camera_index = int(camera_match.group(1)) if camera_match else None
 
@@ -71,43 +76,26 @@ def load_npy_files(base_dir):
 
         # Initialize variables.
         camera_index = None
-        timestamp = None
         data = None
 
         # Check the type and structure of the loaded data.
         if isinstance(loaded, dict):
-            if "camera_index" in loaded:
-                # New format with metadata.
-                camera_index = loaded.get("camera_index")
-                # Using 'abs_time' as the timestamp key; change to "timestamp" if that’s what you use.
-                timestamp = loaded.get("abs_time")
-                data = loaded.get("img_data")
-                # Verify folder consistency.
-                if camera_index is not None:
-                    expected_folder = f"camera_{camera_index}"
-                    if expected_folder != camera_folder:
-                        logger.info(f"File {file_path} expected in folder {expected_folder} but found in {camera_folder}. Updating folder.")
-                        camera_folder = expected_folder
-            else:
-                # Older format stored as a dict.
-                data = loaded.get("data", loaded)
-                timestamp = loaded.get("timestamp")
-                camera_index = None
+            data = loaded.get("img_data", loaded.get("data"))
+            camera_index = loaded.get("camera_index", None)
         elif isinstance(loaded, (tuple, list)) and len(loaded) >= 3:
-            data, timestamp, camera_index = loaded[0], loaded[1], loaded[2]
-            if camera_index is not None:
-                expected_folder = f"camera_{camera_index}"
-                if expected_folder != camera_folder:
-                    logger.info(f"File {file_path} expected in folder {expected_folder} but found in {camera_folder}. Updating folder.")
-                    camera_folder = expected_folder
+            data, _, camera_index = loaded[:3]
         elif isinstance(loaded, np.ndarray):
-            # Raw npy array (only image data)
             data = loaded
-            timestamp = None
-            camera_index = None
         else:
             logger.warning(f"Unexpected data format in {file_path}")
             continue
+
+        # If metadata contains a camera index, verify folder consistency
+        if camera_index is not None:
+            expected_folder = f"camera_{camera_index}"
+            if expected_folder != camera_folder:
+                logger.info(f"File {file_path} expected in {expected_folder} but found in {camera_folder}. Updating folder.")
+                camera_folder = expected_folder
 
         record = {
             "uuid": uuid,
@@ -115,10 +103,11 @@ def load_npy_files(base_dir):
             "camera_folder": camera_folder,
             "camera_index": camera_index,
             "file_path": file_path,
-            "timestamp": timestamp,
+            "timestamp": timestamp,  # Fixed: extracted from filename
             "data": data
         }
         records.append(record)
+
     
     # Create a DataFrame from all collected records.
     df = pd.DataFrame(records)
@@ -126,7 +115,7 @@ def load_npy_files(base_dir):
 
 if __name__ == "__main__":
     # Adjust this to the parent directory that contains all the UUID directories.
-    base_dir = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
+    base_dir = r"/data1/dnicho26/EMG_DATASET/data"
     
     # Load the npy files into a DataFrame.
     df = load_npy_files(base_dir)
