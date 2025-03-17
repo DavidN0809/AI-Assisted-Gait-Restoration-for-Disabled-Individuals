@@ -4,9 +4,11 @@ import torch.nn as nn
 from tqdm import tqdm
 import copy
 import torch
+import math
+from sklearn.metrics import f1_score  # for classification f1 score
 
 class EarlyStopping():
-    def __init__(self, patience=5, min_delta=0, restore_best_weights=True):
+    def __init__(self, patience=5, min_delta=1e4, restore_best_weights=True):
         self.patience = patience
         self.min_delta = min_delta
         self.restore_best_weights = restore_best_weights
@@ -70,21 +72,29 @@ class ModelTrainer:
             self.progressbar = tqdm
         
         # Dictionary to store metrics over epochs.
-        # For classification, we track accuracy and confusion matrix.
         if model_type == "Classification":
             self.Metrics = {"Training Loss": [], "Validation Loss": [],
                             "Training Accuracy": [], "Validation Accuracy": [],
-                            "Test Loss": 0, "Test Accuracy": 0}
+                            "Test Loss": 0, "Test Accuracy": 0, "Test F1 Score": 0}
             self.ConfMatrix = None
         else:
-            self.Metrics = {"Training Loss": [], "Validation Loss": [], "Test Loss": 0}
+            # For regression, also track additional metrics.
+            self.Metrics = {"Training Loss": [], "Validation Loss": [],
+                            "Test Loss": 0, "Test MSE": 0, "Test RMSE": 0, "Test MAE": 0,
+                            "Test R2": 0, "Test Pearson": 0, "Per Action Metrics": {}}
     
     def Training_Loop(self, Loader):
         self.model.train()
         tLossSum = 0
         tAccuracy = 0
         
-        for data, labels in self.progressbar(Loader):
+        for batch in self.progressbar(Loader):
+            # If dataset returns (data, labels, action) then ignore the action here.
+            if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                data, labels, _ = batch
+            else:
+                data, labels = batch
+
             data = data.to(self.device)
             
             if self.model_type == "Classification":
@@ -108,7 +118,6 @@ class ModelTrainer:
             
             # For classification, calculate accuracy.
             if self.model_type == "Classification":
-                # Convert predictions and labels back to integers for accuracy.
                 pred_labels = torch.tensor([torch.argmax(i).item() for i in pred]).to(self.device)
                 true_labels = torch.tensor([torch.argmax(i).item() for i in labels]).to(self.device)
                 tAccuracy += self.accuracy(pred_labels, true_labels)
@@ -123,7 +132,12 @@ class ModelTrainer:
         tAccuracy = 0
         
         with torch.no_grad():
-            for data, labels in Loader:
+            for batch in Loader:
+                if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                    data, labels, _ = batch
+                else:
+                    data, labels = batch
+                    
                 data = data.to(self.device)
                 if self.model_type == "Classification":
                     labels = torch.eye(self.classNum)[labels].to(self.device)
@@ -147,6 +161,7 @@ class ModelTrainer:
         if self.model_type == "Classification":
             self.Metrics["Validation Accuracy"].append(tAccuracy / len(Loader))
    
+   
     def fit(self, trainingLoader, validateLoader, EPOCHS, start_epoch=0):
         ES = EarlyStopping()
         for epoch in range(start_epoch, EPOCHS):
@@ -156,52 +171,149 @@ class ModelTrainer:
             if not self.noPrint:
                 print("EPOCH:", epoch + 1)
                 print("Training Loss:", self.Metrics["Training Loss"][-1],
-                    " | Validation Loss:", self.Metrics["Validation Loss"][-1])
+                      " | Validation Loss:", self.Metrics["Validation Loss"][-1])
                 if self.model_type == "Classification":
                     print("Training Accuracy:", self.Metrics["Training Accuracy"][-1],
-                        " | Validation Accuracy:", self.Metrics["Validation Accuracy"][-1])            
+                          " | Validation Accuracy:", self.Metrics["Validation Accuracy"][-1])
+            
+            # Save current epoch metrics to the log file (append mode)
+            if hasattr(self, "epoch_log_file"):
+                with open(self.epoch_log_file, "a") as f:
+                    f.write(f"Epoch: {epoch+1}\n")
+                    f.write("Training Loss: {}\n".format(self.Metrics["Training Loss"][-1]))
+                    f.write("Validation Loss: {}\n".format(self.Metrics["Validation Loss"][-1]))
+                    if self.model_type == "Classification":
+                        f.write("Training Accuracy: {}\n".format(self.Metrics["Training Accuracy"][-1]))
+                        f.write("Validation Accuracy: {}\n".format(self.Metrics["Validation Accuracy"][-1]))
+                    f.write("\n")
+            
             if ES(self.model, self.Metrics["Validation Loss"][-1]):
                 if not self.noPrint:
                     print("Stopping Model Early:", ES.status)
                 break
-
     
     def Test_Model(self, testLoader):
         self.model.eval()
         total_loss = 0
         
-        # For classification, set up confusion matrix and accuracy.
         if self.model_type == "Classification":
-            confusion = ConfusionMatrix(task="multiclass", num_classes=self.classNum).to(self.device)
-            total_accuracy = 0
-        
-        with torch.no_grad():
-            for data, labels in testLoader:
-                data = data.to(self.device)
-                if self.model_type == "Classification":
-                    labels = torch.eye(self.classNum)[labels].to(self.device)
-                else:
-                    labels = labels.to(self.device)
-                
-                pred = self.model(data)
-                if self.flatten_output:
-                    loss_val = self.Loss_Function(self.flat(pred), self.flat(labels))
-                else:
-                    loss_val = self.Loss_Function(pred, labels)
+            # For classification tasks, accumulate predicted and true labels.
+            all_pred_labels = []
+            all_true_labels = []
+            
+            with torch.no_grad():
+                for batch in testLoader:
+                    if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                        data, labels, _ = batch
+                    else:
+                        data, labels = batch
+                        
+                    data = data.to(self.device)
+                    # Convert labels to one-hot vectors for loss calculation.
+                    labels_onehot = torch.eye(self.classNum)[labels].to(self.device)
+                    pred = self.model(data)
+                    if self.flatten_output:
+                        loss_val = self.Loss_Function(self.flat(pred), self.flat(labels_onehot))
+                    else:
+                        loss_val = self.Loss_Function(pred, labels_onehot)
+                        
+                    total_loss += loss_val.item()
                     
-                total_loss += loss_val.item()
-                
-                if self.model_type == "Classification":
-                    pred_labels = torch.tensor([torch.argmax(i).item() for i in pred]).to(self.device)
-                    true_labels = torch.tensor([torch.argmax(i).item() for i in labels]).to(self.device)
-                    total_accuracy += self.accuracy(pred_labels, true_labels)
-                    confusion.update(pred_labels, true_labels)
-        
-        self.Metrics["Test Loss"] = total_loss / len(testLoader)
-        if self.model_type == "Classification":
-            self.Metrics["Test Accuracy"] = total_accuracy / len(testLoader)
-            self.ConfMatrix = confusion.compute().cpu()
-        
+                    # Get predicted labels from model output.
+                    pred_labels = torch.argmax(pred, dim=1)
+                    # For true labels, use the original integer labels.
+                    all_pred_labels.extend(pred_labels.cpu().numpy().tolist())
+                    all_true_labels.extend(labels.cpu().numpy().tolist())
+            
+            self.Metrics["Test Loss"] = total_loss / len(testLoader)
+            # Calculate accuracy using the provided accuracy function.
+            acc = self.accuracy(torch.tensor(all_pred_labels), torch.tensor(all_true_labels))
+            self.Metrics["Test Accuracy"] = acc.item() if isinstance(acc, torch.Tensor) else acc
+            # Calculate F1 score (weighted)
+            f1 = f1_score(all_true_labels, all_pred_labels, average='weighted')
+            self.Metrics["Test F1 Score"] = f1
+            
+            self.test_results = {"preds": all_pred_labels, "targets": all_true_labels}
+            
+        else:
+            # For regression tasks.
+            all_preds = []
+            all_targets = []
+            all_actions = []
+            
+            with torch.no_grad():
+                for batch in testLoader:
+                    if isinstance(batch, (list, tuple)) and len(batch) == 3:
+                        data, labels, actions = batch
+                    else:
+                        data, labels = batch
+                        actions = ["unknown"] * data.size(0)
+                    
+                    data = data.to(self.device)
+                    labels = labels.to(self.device)
+                    pred = self.model(data)
+                    
+                    if self.flatten_output:
+                        loss_val = self.Loss_Function(self.flat(pred), self.flat(labels))
+                    else:
+                        loss_val = self.Loss_Function(pred, labels)
+                        
+                    total_loss += loss_val.item()
+                    
+                    for i in range(data.size(0)):
+                        all_preds.append(pred[i].cpu())
+                        all_targets.append(labels[i].cpu())
+                        if isinstance(actions, list):
+                            all_actions.append(actions[i])
+                        else:
+                            all_actions.append(actions[i])
+            
+            # Stack all predictions and targets into tensors.
+            all_preds_tensor = torch.stack(all_preds)
+            all_targets_tensor = torch.stack(all_targets)
+            
+            # Standard regression metrics.
+            mse = ((all_preds_tensor - all_targets_tensor)**2).mean().item()
+            rmse = math.sqrt(mse)
+            mae = torch.abs(all_preds_tensor - all_targets_tensor).mean().item()
+            
+            self.Metrics["Test Loss"] = total_loss / len(testLoader)
+            self.Metrics["Test MSE"] = mse
+            self.Metrics["Test RMSE"] = rmse
+            self.Metrics["Test MAE"] = mae
+            
+            # Compute R-squared.
+            ss_res = ((all_targets_tensor - all_preds_tensor)**2).sum()
+            ss_tot = ((all_targets_tensor - all_targets_tensor.mean())**2).sum()
+            r2 = 1 - ss_res/ss_tot
+            self.Metrics["Test R2"] = r2.item()
+            
+            # Compute Pearson correlation coefficient.
+            y_true_flat = all_targets_tensor.view(-1)
+            y_pred_flat = all_preds_tensor.view(-1)
+            cov = ((y_true_flat - y_true_flat.mean()) * (y_pred_flat - y_pred_flat.mean())).sum()
+            std_true = torch.sqrt(((y_true_flat - y_true_flat.mean())**2).sum())
+            std_pred = torch.sqrt(((y_pred_flat - y_pred_flat.mean())**2).sum())
+            pearson = cov / (std_true * std_pred)
+            self.Metrics["Test Pearson"] = pearson.item()
+            
+            # Compute per-action metrics.
+            per_action_metrics = {}
+            unique_actions = set(all_actions)
+            for action in unique_actions:
+                indices = [i for i, a in enumerate(all_actions) if a == action]
+                if indices:
+                    preds_action = torch.stack([all_preds[i] for i in indices])
+                    targets_action = torch.stack([all_targets[i] for i in indices])
+                    mse_action = ((preds_action - targets_action)**2).mean().item()
+                    rmse_action = math.sqrt(mse_action)
+                    mae_action = torch.abs(preds_action - targets_action).mean().item()
+                    per_action_metrics[action] = {"MSE": mse_action, "RMSE": rmse_action, "MAE": mae_action}
+            
+            self.Metrics["Per Action Metrics"] = per_action_metrics
+            
+            self.test_results = {"preds": all_preds, "targets": all_targets, "actions": all_actions}
+
     def Graph_Metrics(self, save_path=None):
         if self.model_type == "Classification":
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
@@ -219,7 +331,6 @@ class ModelTrainer:
             ax2.set_ylabel("Accuracy")
             ax2.legend()
             
-            # Optionally, plot the confusion matrix if available.
             if self.ConfMatrix is not None:
                 plt.figure(figsize=(5, 5))
                 plt.imshow(self.ConfMatrix, cmap='Blues')
@@ -240,16 +351,17 @@ class ModelTrainer:
         
         if save_path is not None:
             plt.savefig(save_path)
-            plt.close()  # Close the current figure to free up memory
+            plt.close()
         else:
             plt.show()
-
 
     def reset(self):
         if self.model_type == "Classification":
             self.Metrics = {"Training Loss": [], "Validation Loss": [],
                             "Training Accuracy": [], "Validation Accuracy": [],
-                            "Test Loss": 0, "Test Accuracy": 0}
+                            "Test Loss": 0, "Test Accuracy": 0, "Test F1 Score": 0}
             self.ConfMatrix = None
         else:
-            self.Metrics = {"Training Loss": [], "Validation Loss": [], "Test Loss": 0}
+            self.Metrics = {"Training Loss": [], "Validation Loss": [],
+                            "Test Loss": 0, "Test MSE": 0, "Test RMSE": 0, "Test MAE": 0,
+                            "Test R2": 0, "Test Pearson": 0, "Per Action Metrics": {}}
