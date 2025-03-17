@@ -20,7 +20,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using device:", device)
 
 # General hyperparameters
-index = r'/data1/dnicho26/EMG_DATASET/processed/index.csv'
+#index = r'/data1/dnicho26/EMG_DATASET/processed/index.csv'
 index = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory/processed/index.csv"
 
 #base_dir="/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals"
@@ -28,7 +28,7 @@ base_dir = r"C:\Users\alway\OneDrive\Documents\GitHub\AI-Assisted-Gait-Restorati
 
 lag = 30
 n_ahead = 10
-batch_size = 512
+batch_size = 64
 epochs = 300
 lr = 1e-7
 hidden_size = 128
@@ -72,7 +72,7 @@ for input_mode in input_configs:
     os.makedirs(fig_dir, exist_ok=True)
     
     dataset = EMG_dataset(index, lag=lag, n_ahead=n_ahead,
-                          input_sensor=input_mode, target_sensor="emg")
+                          input_sensor=input_mode, target_sensor="emg", randomize_legs=False)
     
     # Check an example window (now returns action as well)
     X, Y, action = dataset.__getitem__(0)
