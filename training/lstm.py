@@ -30,12 +30,13 @@ hidden_size = 128
 num_layers = 5
 output_size = 3  # Always predict 3 channels (target leg EMG)
 
+base_dir="/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals"
 # Ensure checkpoint directory exists
-checkpoint_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/models/checkpoints"
+checkpoint_dir = f"{base_dir}/models/checkpoints"
 os.makedirs(checkpoint_dir, exist_ok=True)
 
 # Ensure trained models directory exists
-trained_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/models/trained"
+trained_dir = f"{base_dir}/models/trained"
 os.makedirs(trained_dir, exist_ok=True)
 
 # Define input configurations and corresponding sizes
@@ -44,10 +45,10 @@ input_sizes = {"all": 21, "emg": 3, "acc": 9, "gyro": 9}
 
 results = {}
 
-log_base_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/logs"
+log_base_dir = f"{base_dir}/logs"
 os.makedirs(log_base_dir, exist_ok=True)
 
-fig_base_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/figures/training"
+fig_base_dir = "{base_dir}/figures/training"
 os.makedirs(fig_base_dir, exist_ok=True)
 
 results = {}
@@ -172,37 +173,37 @@ for input_mode in input_configs:
         print(f"Saved sample prediction plot for action: {act} with input config {input_mode}")
     
     # Additionally, generate a "sample_prediction_all" plot.
-    for batch in testLoader:
-        if isinstance(batch, (list, tuple)) and len(batch) == 3:
-            data, labels, _ = batch
-        else:
-            data, labels = batch
-        data = data.to(device)
-        labels = labels.to(device)
-        pred = model(data).detach().cpu()
-        labels = labels.cpu()
-        sample_pred = pred[0]  # shape: [n_ahead, channels]
-        sample_target = labels[0]
-        y_range = range(sample_pred.shape[0])
+    # for batch in testLoader:
+    #     if isinstance(batch, (list, tuple)) and len(batch) == 3:
+    #         data, labels, _ = batch
+    #     else:
+    #         data, labels = batch
+    #     data = data.to(device)
+    #     labels = labels.to(device)
+    #     pred = model(data).detach().cpu()
+    #     labels = labels.cpu()
+    #     sample_pred = pred[0]  # shape: [n_ahead, channels]
+    #     sample_target = labels[0]
+    #     y_range = range(sample_pred.shape[0])
         
-        fig, axs = plt.subplots(1, sample_pred.shape[1], figsize=(6*sample_pred.shape[1], 4))
-        if sample_pred.shape[1] == 1:
-            axs = [axs]
-        for ch in range(sample_pred.shape[1]):
-            axs[ch].plot(y_range, sample_pred[:, ch].numpy(), 'b', marker='o', 
-                       label=f"{left_mapping.get(ch, 'Channel ' + str(ch))} Prediction")
-            axs[ch].plot(y_range, sample_target[:, ch].numpy(), 'g', marker='o', 
-                       label=f"{left_mapping.get(ch, 'Channel ' + str(ch))} Actual")
-            axs[ch].set_title(left_mapping.get(ch, f"Channel {ch}"))
-            axs[ch].set_xlabel("Timestep")
-            axs[ch].set_ylabel("Signal Amplitude")
-            axs[ch].legend()
-        plt.suptitle("Sample Muscles Prediction - All")
-        sample_pred_all_path = os.path.join(fig_dir, f"sample_prediction_all_{input_mode}.png")
-        plt.savefig(sample_pred_all_path)
-        plt.close()
-        print(f"Saved sample prediction all plot for input config {input_mode}")
-        break
+    #     fig, axs = plt.subplots(1, sample_pred.shape[1], figsize=(6*sample_pred.shape[1], 4))
+    #     if sample_pred.shape[1] == 1:
+    #         axs = [axs]
+    #     for ch in range(sample_pred.shape[1]):
+    #         axs[ch].plot(y_range, sample_pred[:, ch].numpy(), 'b', marker='o', 
+    #                    label=f"{left_mapping.get(ch, 'Channel ' + str(ch))} Prediction")
+    #         axs[ch].plot(y_range, sample_target[:, ch].numpy(), 'g', marker='o', 
+    #                    label=f"{left_mapping.get(ch, 'Channel ' + str(ch))} Actual")
+    #         axs[ch].set_title(left_mapping.get(ch, f"Channel {ch}"))
+    #         axs[ch].set_xlabel("Timestep")
+    #         axs[ch].set_ylabel("Signal Amplitude")
+    #         axs[ch].legend()
+    #     plt.suptitle("Sample Muscles Prediction - All")
+    #     sample_pred_all_path = os.path.join(fig_dir, f"sample_prediction_all_{input_mode}.png")
+    #     plt.savefig(sample_pred_all_path)
+    #     plt.close()
+    #     print(f"Saved sample prediction all plot for input config {input_mode}")
+    #     break
 
     results[input_mode] = trainer.Metrics
 
