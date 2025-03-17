@@ -5,10 +5,10 @@ from tqdm import tqdm
 import copy
 import torch
 import math
-from sklearn.metrics import f1_score  # for classification f1 score
+from sklearn.metrics import f1_score  
 
 class EarlyStopping():
-    def __init__(self, patience=5, min_delta=1e4, restore_best_weights=True):
+    def __init__(self, patience=5, min_delta=1e-5, restore_best_weights=True):
         self.patience = patience
         self.min_delta = min_delta
         self.restore_best_weights = restore_best_weights

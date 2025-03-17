@@ -21,16 +21,20 @@ print("Using device:", device)
 
 # General hyperparameters
 index = r'/data1/dnicho26/EMG_DATASET/processed/index.csv'
+index = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory/processed/index.csv"
+
+#base_dir="/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals"
+base_dir = r"C:\Users\alway\OneDrive\Documents\GitHub\AI-Assisted-Gait-Restoration-for-Disabled-Individuals"
+
 lag = 30
 n_ahead = 10
-batch_size = 3000
-epochs = 1
+batch_size = 512
+epochs = 300
 lr = 1e-7
 hidden_size = 128
 num_layers = 5
 output_size = 3  # Always predict 3 channels (target leg EMG)
 
-base_dir="/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals"
 # Ensure checkpoint directory exists
 checkpoint_dir = f"{base_dir}/models/checkpoints"
 os.makedirs(checkpoint_dir, exist_ok=True)
@@ -48,7 +52,7 @@ results = {}
 log_base_dir = f"{base_dir}/logs"
 os.makedirs(log_base_dir, exist_ok=True)
 
-fig_base_dir = "{base_dir}/figures/training"
+fig_base_dir = f"{base_dir}/figures/training"
 os.makedirs(fig_base_dir, exist_ok=True)
 
 results = {}

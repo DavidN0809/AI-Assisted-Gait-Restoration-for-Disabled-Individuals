@@ -13,14 +13,15 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 class Configuration:
     def __init__(self, root, scaling, dataRange, target_rate):
         self.root = root
-        self.raw = os.path.join(root, "data")       # raw CSV files
+        self.raw = os.path.join(root)       # raw CSV files
         self.processed = os.path.join(root, "processed")
         self.scaling = scaling
         self.dr = dataRange
         self.target_rate = target_rate  # target resampling frequency in Hz
 
-# Set the target frequency to which sensor data will be resampled.
-config = Configuration(root=r"/data1/dnicho26/EMG_DATASET", scaling=10000, dataRange=slice(0, -1), target_rate=148.148)
+#base_dir=r"/data1/dnicho26/EMG_DATASET/data"
+base_dir=r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
+config = Configuration(root=base_dir, scaling=10000, dataRange=slice(0, -1), target_rate=148.148)
 
 # Set this flag to True to run in index-only mode
 index_only = False
