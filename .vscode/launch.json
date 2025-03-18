@@ -36,6 +36,18 @@
             },
             "console": "integratedTerminal",
             "justMyCode": false
+        },
+        {
+            "name": "LSTM-test",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "training.lstm-test",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "console": "integratedTerminal",
+            "justMyCode": false
         }
     ]
 }
