@@ -160,9 +160,8 @@ class ModelTrainer:
         self.Metrics["Validation Loss"].append(tLossSum / len(Loader))
         if self.model_type == "Classification":
             self.Metrics["Validation Accuracy"].append(tAccuracy / len(Loader))
-   
-   
-    def fit(self, trainingLoader, validateLoader, EPOCHS, start_epoch=0):
+    
+    def fit(self, trainingLoader, validateLoader, EPOCHS, start_epoch=0, checkpoint_dir=None):
         ES = EarlyStopping()
         for epoch in range(start_epoch, EPOCHS):
             self.Training_Loop(trainingLoader)
@@ -171,10 +170,10 @@ class ModelTrainer:
             if not self.noPrint:
                 print("EPOCH:", epoch + 1)
                 print("Training Loss:", self.Metrics["Training Loss"][-1],
-                      " | Validation Loss:", self.Metrics["Validation Loss"][-1])
+                    " | Validation Loss:", self.Metrics["Validation Loss"][-1])
                 if self.model_type == "Classification":
                     print("Training Accuracy:", self.Metrics["Training Accuracy"][-1],
-                          " | Validation Accuracy:", self.Metrics["Validation Accuracy"][-1])
+                        " | Validation Accuracy:", self.Metrics["Validation Accuracy"][-1])
             
             # Save current epoch metrics to the log file (append mode)
             if hasattr(self, "epoch_log_file"):
@@ -186,12 +185,23 @@ class ModelTrainer:
                         f.write("Training Accuracy: {}\n".format(self.Metrics["Training Accuracy"][-1]))
                         f.write("Validation Accuracy: {}\n".format(self.Metrics["Validation Accuracy"][-1]))
                     f.write("\n")
-            
+
+            # **Save checkpoint every epoch**
+            if checkpoint_dir is not None:
+                checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch+1}.pth")
+                torch.save({
+                    'epoch': epoch,
+                    'model_state_dict': self.model.state_dict(),
+                    'optimizer_state_dict': self.optimizer.state_dict(),
+                }, checkpoint_path)
+                print(f"Checkpoint saved to {checkpoint_path}")
+
+            # Check early stopping condition
             if ES(self.model, self.Metrics["Validation Loss"][-1]):
                 if not self.noPrint:
                     print("Stopping Model Early:", ES.status)
                 break
-    
+
     def Test_Model(self, testLoader):
         self.model.eval()
         total_loss = 0

@@ -133,3 +133,26 @@ class AttentionLSTM(nn.Module):
         out = self.fc(context)
         out = out.view(-1, self.n_ahead, out.size(1) // self.n_ahead)
         return out
+class TimeSeriesTransformer(nn.Module):
+    """
+    A transformer-based model for time series prediction.
+    """
+    def __init__(self, input_size, num_heads, num_layers, hidden_dim, output_size, dropout=0.1, n_ahead=1):
+        super(TimeSeriesTransformer, self).__init__()
+        self.input_projection = nn.Linear(input_size, hidden_dim)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=num_heads, dropout=dropout)
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.output_projection = nn.Linear(hidden_dim, output_size)
+        self.n_ahead = n_ahead # Adjust if predicting multiple timesteps in sequence
+        
+    def forward(self, x):
+        # x shape: (batch_size, seq_length, input_size)
+        x = self.input_projection(x)
+        x = x.permute(1, 0, 2)  # (seq_length, batch_size, hidden_dim)
+        encoded = self.transformer_encoder(x)
+        encoded = encoded.permute(1, 0, 2)  # (batch_size, seq_length, hidden_dim)
+        # For simplicity, we use the output from the last timestep
+        out = self.output_projection(encoded[:, -1, :])
+        # Reshape to [batch, n_ahead, output_size]
+        out = out.unsqueeze(1)
+        return out
