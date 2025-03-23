@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 import os
 import re
-import sys
-import argparse
 import pandas as pd
-from pathlib import Path
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import random
+from concurrent.futures import ThreadPoolExecutor
 
 # -------------------------------
 # Minimal Configuration for dataset paths and splits
@@ -15,20 +13,39 @@ import random
 class Configuration:
     def __init__(self, root, train_split=0.7, val_split=0.10, test_split=0.20):
         self.root = root
-        self.raw = os.path.join(root, "data")        # raw CSV files
-        self.processed = os.path.join(root, "processed-test")
+        self.raw = os.path.join(root, "data/data")        # raw CSV files
+        self.processed = os.path.join(root, "data/processed-server")
         self.train_split = train_split
         self.val_split = val_split
         self.test_split = test_split
 
 # Update this to your base directory.
-base_dir = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
+#base_dir = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
+base_dir = "/data1/dnicho26/EMG_DATASET/"
 config = Configuration(root=base_dir)
-# -------------------------------
-# Helper: Find CSV files in the directory structure
-# -------------------------------
+
+def find_csv_in_subdir(subdir):
+    csv_files = []
+    for root, dirs, files in os.walk(subdir, topdown=True):
+        # Remove any directories with "camera" in their name (case insensitive)
+        dirs[:] = [d for d in dirs if "camera" not in d.lower()]
+        for file in files:
+            if file.lower().endswith('.csv'):
+                csv_files.append(os.path.join(root, file))
+    return csv_files
+
 def find_csv_files(directory):
-    return [str(f) for f in Path(directory).rglob("*.csv")]
+    csv_files = []
+    # Get immediate subdirectories
+    subdirs = [os.path.join(directory, d) for d in os.listdir(directory)
+               if os.path.isdir(os.path.join(directory, d))]
+    
+    with ThreadPoolExecutor() as executor:
+        futures = [executor.submit(find_csv_in_subdir, subdir) for subdir in subdirs]
+        for future in futures:
+            csv_files.extend(future.result())
+    
+    return csv_files
 
 # -------------------------------
 # Sensor Name Fixing Function
@@ -75,7 +92,7 @@ def check_and_fix_sensors(df):
     if valid_set.issubset(present_valid):
         return df
     else:
-        print(f"After renaming, not all sensors 0-6 are present (found {present_valid}). Skipping file.")
+        print(f"After renaming, not all sensors 0-5 are present (found {present_valid}). Skipping file.")
         return None
 
 # -------------------------------
@@ -86,6 +103,7 @@ def process_file(file_path, raw_dir, processed_dir):
         df = pd.read_csv(file_path, header=0)
         df.columns = df.columns.astype(str).str.strip()
         
+        # Remove extra time columns and rename "time 0" to "time"
         time_cols = [col for col in df.columns if col.lower().startswith("time") and col.lower() != "time 0"]
         if time_cols:
             df.drop(columns=time_cols, inplace=True)
@@ -97,6 +115,23 @@ def process_file(file_path, raw_dir, processed_dir):
             print(f"Skipping file {file_path} due to sensor requirements.")
             return None
 
+        # Check sample rate if "time" column exists.
+        if "time" in df.columns:
+            # Compute time differences and use median as representative dt
+            time_diffs = df["time"].diff().dropna()
+            if not time_diffs.empty:
+                median_dt = time_diffs.median()
+                # Avoid division by zero
+                if median_dt == 0:
+                    print(f"File {file_path} has zero time difference. Skipping file.")
+                    return None
+                computed_sample_rate = 1 / median_dt
+                # Allow a tolerance of 1 Hz around 1259.259 Hz
+                if abs(computed_sample_rate - 1259.259) > 1:
+                    print(f"Dropping file {file_path} due to sample rate mismatch: computed {computed_sample_rate:.3f} Hz")
+                    return None
+
+        # Prepare output directory and save the processed file
         rel_path = os.path.relpath(file_path, raw_dir)
         rel_dir = os.path.dirname(rel_path)
         output_dir_full = os.path.join(processed_dir, rel_dir)
@@ -141,9 +176,9 @@ def create_index(processed_files, suffix):
     test_files = processed_files[val_end:]
     
     # Create three index files (optionally with an action suffix)
-    train_count = update_index(train_files, processed_dir, f"index_train{suffix}.csv")
-    val_count = update_index(val_files, processed_dir, f"index_val{suffix}.csv")
-    test_count = update_index(test_files, processed_dir, f"index_test{suffix}.csv")
+    train_count = update_index(train_files, config.processed, f"index_train{suffix}.csv")
+    val_count = update_index(val_files, config.processed, f"index_val{suffix}.csv")
+    test_count = update_index(test_files, config.processed, f"index_test{suffix}.csv")
     
     print(f"Training index contains {train_count} files.")
     print(f"Validation index contains {val_count} files.")
@@ -173,7 +208,7 @@ if __name__ == "__main__":
     action_filter = "_treadmill"
     # Check if the action appears as a directory in the file path.
     filter_processed_files = [f for f in processed_files if os.path.sep + action_filter + os.path.sep in f.lower()]
-    suffix = f"_{action_filter}"
+    suffix = f"{action_filter}"
     print(f"After filtering, {len(filter_processed_files)} files remain for action: {action_filter}")
 
     create_index(filter_processed_files, action_filter)

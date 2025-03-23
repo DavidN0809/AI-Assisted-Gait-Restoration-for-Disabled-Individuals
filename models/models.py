@@ -133,26 +133,52 @@ class AttentionLSTM(nn.Module):
         out = self.fc(context)
         out = out.view(-1, self.n_ahead, out.size(1) // self.n_ahead)
         return out
+    
+    
 class TimeSeriesTransformer(nn.Module):
-    """
-    A transformer-based model for time series prediction.
-    """
     def __init__(self, input_size, num_heads, num_layers, hidden_dim, output_size, dropout=0.1, n_ahead=1):
         super(TimeSeriesTransformer, self).__init__()
         self.input_projection = nn.Linear(input_size, hidden_dim)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=num_heads, dropout=dropout)
+        # Use batch_first=True to avoid the nested tensor warning
+        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=num_heads, dropout=dropout, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.output_projection = nn.Linear(hidden_dim, output_size)
-        self.n_ahead = n_ahead # Adjust if predicting multiple timesteps in sequence
-        
+        # Update output_projection to predict n_ahead timesteps
+        self.output_projection = nn.Linear(hidden_dim, output_size * n_ahead)
+        self.n_ahead = n_ahead
+        self.output_size = output_size
+
     def forward(self, x):
-        # x shape: (batch_size, seq_length, input_size)
+        # x shape: [batch, seq_length, input_size]
         x = self.input_projection(x)
-        x = x.permute(1, 0, 2)  # (seq_length, batch_size, hidden_dim)
+        # Since batch_first=True, no need to permute
         encoded = self.transformer_encoder(x)
-        encoded = encoded.permute(1, 0, 2)  # (batch_size, seq_length, hidden_dim)
-        # For simplicity, we use the output from the last timestep
+        # Use the encoding from the last timestep
         out = self.output_projection(encoded[:, -1, :])
         # Reshape to [batch, n_ahead, output_size]
-        out = out.unsqueeze(1)
+        out = out.view(-1, self.n_ahead, self.output_size)
+        return out
+
+class CNNLSTM(nn.Module):
+    def __init__(self, input_channels, cnn_hidden_dim, lstm_hidden_dim, lstm_num_layers, output_size):
+        super(CNNLSTM, self).__init__()
+        self.cnn = nn.Sequential(
+            nn.Conv1d(input_channels, cnn_hidden_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool1d(kernel_size=2),
+            nn.Conv1d(cnn_hidden_dim, cnn_hidden_dim, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool1d(kernel_size=2)
+        )
+        self.lstm = nn.LSTM(cnn_hidden_dim, lstm_hidden_dim, lstm_num_layers, batch_first=True)
+        self.fc = nn.Linear(lstm_hidden_dim, output_size)
+        self.dropout = nn.Dropout(0.3)
+
+    def forward(self, x):
+        batch_size, seq_len, num_channels = x.size()
+        x = x.view(batch_size * seq_len, num_channels, -1)
+        cnn_out = self.cnn(x)
+        cnn_out = cnn_out.view(batch_size, seq_len, -1)
+        lstm_out, _ = self.lstm(cnn_out)
+        lstm_out = self.dropout(lstm_out)
+        out = self.fc(lstm_out[:, -1, :])
         return out

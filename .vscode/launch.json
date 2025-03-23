@@ -2,7 +2,7 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Preprocess",
+            "name": "Fix Dataset",
             "type": "debugpy",
             "request": "launch",
             "program": "./data_processing/preprocessing.py",
@@ -18,10 +18,10 @@
             "justMyCode": false
         },
         {
-            "name": "Skeleton",
+            "name": "Process",
             "type": "debugpy",
             "request": "launch",
-            "program": "./data_processing/skeleton.py",
+            "program": "./data_processing/processing.py",
             "console": "integratedTerminal",
             "justMyCode": false
         },
@@ -30,18 +30,6 @@
             "type": "debugpy",
             "request": "launch",
             "module": "training.lstm",
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            },
-            "console": "integratedTerminal",
-            "justMyCode": false
-        },
-        {
-            "name": "LSTM-test",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "training.lstm-test",
             "cwd": "${workspaceFolder}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
