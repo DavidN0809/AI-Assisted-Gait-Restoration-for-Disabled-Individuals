@@ -2,14 +2,6 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Fix Dataset",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "./data_processing/preprocessing.py",
-            "console": "integratedTerminal",
-            "justMyCode": false
-        },
-        {
             "name": "Check Data",
             "type": "debugpy",
             "request": "launch",
@@ -26,10 +18,10 @@
             "justMyCode": false
         },
         {
-            "name": "LSTM",
+            "name": "Train-Params",
             "type": "debugpy",
             "request": "launch",
-            "module": "training.lstm",
+            "module": "training.training",
             "cwd": "${workspaceFolder}",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"

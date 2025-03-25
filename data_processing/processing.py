@@ -100,12 +100,22 @@ def resample_emg_keep_inertial(df):
     new_df.reset_index(drop=True, inplace=True)
     return new_df
 
+def manual_min_max_scale(vals, feature_range=(-1, 1)):
+    min_val = np.min(vals)
+    max_val = np.max(vals)
+    # Avoid division by zero if all values are equal.
+    if max_val == min_val:
+        return np.zeros_like(vals)
+    a, b = feature_range
+    return (vals - min_val) / (max_val - min_val) * (b - a) + a
+
 def process_file(file_path, data_dir, fs_target=148.148, emg_scale=100.0,
-                 emg_cutoff=10, inertial_cutoff=5, gyro_highpass_cutoff=0.5,
+                 emg_cutoff=20, inertial_cutoff=5, gyro_highpass_cutoff=0.5,
                  outlier_method="mad", causal_window=5,
                  debug_std=False,
-                 flag_scale=True, flag_outlier=True, flag_lowpass=False,
-                 flag_moving_average=False, flag_highpass=False):
+                 flag_scale=False, flag_outlier=True, flag_lowpass=False,
+                 flag_moving_average=False, flag_highpass=True,
+                 flag_normalize=True):  # New flag added here.
     if not os.path.isfile(file_path):
         print(f"File not found: {file_path}")
         return None
@@ -115,117 +125,131 @@ def process_file(file_path, data_dir, fs_target=148.148, emg_scale=100.0,
     parts = [p for p in file_path.split(os.sep) if p]
     action = parts[-2] if len(parts) >= 2 else "unknown"
 
-    try:
-        df = pd.read_csv(file_path)
-        df = remove_imp_cols_and_unnamed(df)
-        if 'time' in df.columns:
-            df = df.drop(columns=['time'])
-        df = resample_emg_keep_inertial(df)
-        nan_columns = df.columns[df.isna().all()].tolist()
-        if nan_columns:
-            print(f"Warning: Entirely NaN columns in {file_path}: {nan_columns}")
-            df = df.drop(columns=nan_columns)
-        if len(df.columns) == 0:
-            print(f"Error: No valid columns remain in {file_path} after dropping NaNs")
-            return None
 
-        df.attrs['file_uuid'] = file_uuid
-        df.attrs['action'] = action
+    df = pd.read_csv(file_path)
+    df = remove_imp_cols_and_unnamed(df)
+    if 'time' in df.columns:
+        df = df.drop(columns=['time'])
+    df = resample_emg_keep_inertial(df)
+    nan_columns = df.columns[df.isna().all()].tolist()
+    if nan_columns:
+        print(f"Warning: Entirely NaN columns in {file_path}: {nan_columns}")
+        df = df.drop(columns=nan_columns)
+    if len(df.columns) == 0:
+        print(f"Error: No valid columns remain in {file_path} after dropping NaNs")
+        return None
 
-        processed_dict = {}
-        emg_cols = [col for col in df.columns if "emg" in col.lower()]
-        if emg_cols:
-            max_values = []
-            for col in emg_cols:
-                vals = df[col].values.astype(np.float32)
-                vals = np.nan_to_num(vals, nan=0.0)
-                max_values.append(np.max(np.abs(vals)))
-            if max(max_values) > 50:
-                if max(max_values) > 10000:
-                    adaptive_scale = 1/10000
-                elif max(max_values) > 1000:
-                    adaptive_scale = 1/1000
-                elif max(max_values) > 100:
-                    adaptive_scale = 1/100
-                else:
-                    adaptive_scale = 1.0
-            else:
-                adaptive_scale = emg_scale
-        else:
-            adaptive_scale = emg_scale
+    df.attrs['file_uuid'] = file_uuid
+    df.attrs['action'] = action
 
-        for col in df.columns:
-            vals = df[col].values.astype(np.float32)
-            name_lower = col.lower()
-            vals = np.nan_to_num(vals, nan=0.0)
-            if "emg" in name_lower:
-                if flag_scale:
-                    vals = vals * adaptive_scale
-                vals = np.abs(vals)
-                if flag_outlier:
-                    if outlier_method == "zscore":
-                        vals = replace_outliers_zscore(vals)
-                    elif outlier_method == "mad":
-                        vals = replace_outliers_mad(vals)
-                    elif outlier_method == "iqr":
-                        vals = replace_outliers_iqr(vals)
-                if flag_lowpass:
-                    vals = lowpass_filter(vals, cutoff=emg_cutoff, fs=fs_target, order=4)
-                if flag_moving_average:
-                    vals = causal_moving_average_1d(vals, window=causal_window)
-                mean_val = np.mean(vals)
-                std_val = np.std(vals)
-                if debug_std:
-                    print(f"{file_uuid} - {col}: mean={mean_val:.2f}, std={std_val:.2f}")
-                if np.max(vals) > 10:
-                    print(f"{file_uuid} - {col}: max {np.max(vals):.2f} exceeds threshold. Dropping CSV: {file_path}")
-                    return None
-                if std_val > 10:
-                    print(f"{file_uuid} - {col}: std {std_val:.2f} exceeds threshold. Dropping CSV: {file_path}")
-                    return None
+    processed_dict = {}
+    # Loop through each column and decide how to process.
+    for col in df.columns:
+        # Ensure we work with a numeric array.
+        vals = df[col].values.astype(np.float32)
+        vals = np.nan_to_num(vals, nan=0.0)
 
-            elif "acc" in name_lower:
-                vals = np.abs(vals)
-                if flag_outlier:
-                    if outlier_method == "zscore":
-                        vals = replace_outliers_zscore(vals)
-                    elif outlier_method == "mad":
-                        vals = replace_outliers_mad(vals)
-                    elif outlier_method == "iqr":
-                        vals = replace_outliers_iqr(vals)
-                if flag_lowpass:
-                    vals = lowpass_filter(vals, cutoff=inertial_cutoff, fs=fs_target, order=4)
-                if flag_moving_average:
-                    vals = causal_moving_average_1d(vals, window=causal_window)
 
-            elif "gyro" in name_lower:
-                vals = np.abs(vals)
-                if flag_outlier:
-                    if outlier_method == "zscore":
-                        vals = replace_outliers_zscore(vals)
-                    elif outlier_method == "mad":
-                        vals = replace_outliers_mad(vals)
-                    elif outlier_method == "iqr":
-                        vals = replace_outliers_iqr(vals)
-                if flag_highpass:
-                    vals = highpass_filter(vals, cutoff=gyro_highpass_cutoff, fs=fs_target, order=4)
-                if flag_lowpass:
-                    vals = lowpass_filter(vals, cutoff=inertial_cutoff, fs=fs_target, order=4)
-            
-            if debug_std:
-                print(f"{file_uuid} - {col} after processing: mean={np.mean(vals):.2f}, std={np.std(vals):.2f}")
+        # Remove outliers based on the specified method.
+        if flag_outlier:
+            if outlier_method == "zscore":
+                vals = replace_outliers_zscore(vals)
+            elif outlier_method == "mad":
+                vals = replace_outliers_mad(vals)
+            elif outlier_method == "iqr":
+                vals = replace_outliers_iqr(vals)
+                    
+        from sklearn.preprocessing import MinMaxScaler
+        # If our simple flag is set, just remove outliers and normalize.
+        if flag_normalize:
+            # Normalize manually to the range [-1, 1]
+            vals = manual_min_max_scale(vals, feature_range=(-1, 1))
             processed_dict[col] = vals
 
-        df_processed = pd.DataFrame(processed_dict)
-        os.makedirs(data_dir, exist_ok=True)
-        processed_file_path = os.path.join(data_dir, file_name)
-        df_processed.to_csv(processed_file_path, index=False)
-        # Return a tuple with the dataframe and its processed file path.
-        return (df_processed, processed_file_path)
+        # Otherwise, process columns as before.
+        name_lower = col.lower()
+        if "emg" in name_lower:
+            if flag_scale:
+                # Adaptive scaling based on maximum absolute values.
+                max_values = []
+                for emg_col in [c for c in df.columns if "emg" in c.lower()]:
+                    temp_vals = df[emg_col].values.astype(np.float32)
+                    temp_vals = np.nan_to_num(temp_vals, nan=0.0)
+                    max_values.append(np.max(np.abs(temp_vals)))
+                if max(max_values) > 50:
+                    if max(max_values) > 10000:
+                        adaptive_scale = 1/10000
+                    elif max(max_values) > 1000:
+                        adaptive_scale = 1/1000
+                    elif max(max_values) > 100:
+                        adaptive_scale = 1/100
+                    else:
+                        adaptive_scale = 1.0
+                else:
+                    adaptive_scale = emg_scale
+                vals = vals * adaptive_scale
+            vals = np.abs(vals)
+            if flag_outlier:
+                if outlier_method == "zscore":
+                    vals = replace_outliers_zscore(vals)
+                elif outlier_method == "mad":
+                    vals = replace_outliers_mad(vals)
+                elif outlier_method == "iqr":
+                    vals = replace_outliers_iqr(vals)
+            if flag_lowpass:
+                vals = lowpass_filter(vals, cutoff=emg_cutoff, fs=fs_target, order=4)
+            if flag_moving_average:
+                vals = causal_moving_average_1d(vals, window=causal_window)
+            mean_val = np.mean(vals)
+            std_val = np.std(vals)
+            if debug_std:
+                print(f"{file_uuid} - {col}: mean={mean_val:.2f}, std={std_val:.2f}")
+            if np.max(vals) > 10:
+                print(f"{file_uuid} - {col}: max {np.max(vals):.2f} exceeds threshold. Dropping CSV: {file_path}")
+                return None
+            if std_val > 10:
+                print(f"{file_uuid} - {col}: std {std_val:.2f} exceeds threshold. Dropping CSV: {file_path}")
+                return None
 
-    except Exception as e:
-        print(f"Error processing {file_path}: {e}")
-        return None
+        elif "acc" in name_lower:
+            vals = np.abs(vals)
+            if flag_outlier:
+                if outlier_method == "zscore":
+                    vals = replace_outliers_zscore(vals)
+                elif outlier_method == "mad":
+                    vals = replace_outliers_mad(vals)
+                elif outlier_method == "iqr":
+                    vals = replace_outliers_iqr(vals)
+            if flag_lowpass:
+                vals = lowpass_filter(vals, cutoff=inertial_cutoff, fs=fs_target, order=4)
+            if flag_moving_average:
+                vals = causal_moving_average_1d(vals, window=causal_window)
+
+        elif "gyro" in name_lower:
+            vals = np.abs(vals)
+            if flag_outlier:
+                if outlier_method == "zscore":
+                    vals = replace_outliers_zscore(vals)
+                elif outlier_method == "mad":
+                    vals = replace_outliers_mad(vals)
+                elif outlier_method == "iqr":
+                    vals = replace_outliers_iqr(vals)
+            if flag_highpass:
+                vals = highpass_filter(vals, cutoff=gyro_highpass_cutoff, fs=fs_target, order=4)
+            if flag_lowpass:
+                vals = lowpass_filter(vals, cutoff=inertial_cutoff, fs=fs_target, order=4)
+        
+        if debug_std:
+            print(f"{file_uuid} - {col} after processing: mean={np.mean(vals):.2f}, std={np.std(vals):.2f}")
+        processed_dict[col] = vals
+
+    df_processed = pd.DataFrame(processed_dict)
+    os.makedirs(data_dir, exist_ok=True)
+    processed_file_path = os.path.join(data_dir, file_name)
+    df_processed.to_csv(processed_file_path, index=False)
+    return (df_processed, processed_file_path)
+
+
 
 def plot_modality_single_file(df, modality, dataset_type, figure_dir):
     modality = modality.lower()
@@ -413,22 +437,23 @@ def process_dataset(index_file, dataset_type, data_dir, debug_std=False):
     print(f"{dataset_type}: Processed {len(dfs)} files; Dropped {dropped} files.")
     return dfs, processed_paths, dropped
 
+
 def update_index_file(original_index, processed_paths, output_index_path):
+    import os
     # Read the original index file
     df_idx = pd.read_csv(original_index)
     
-    # Build a mapping from base filename to the new processed file path.
-    processed_map = {os.path.basename(path): path for path in processed_paths}
-    
-    # Update the 'emg_file' column with the new processed file path (or NaN if not processed)
+    # Create a new 'action' column from the original file paths
     df_idx["action"] = df_idx["emg_file"].apply(
         lambda x: os.path.basename(os.path.dirname(x)) if pd.notna(x) else np.nan
     )
     
+    # Build a mapping from the base filename (from the original file) to the new processed file path.
+    processed_map = {os.path.basename(path): path for path in processed_paths}
     
-    # Create a new 'action' column by extracting the parent folder name from the new file path.
-    df_idx["action"] = df_idx["emg_file"].apply(
-        lambda x: os.path.basename(os.path.dirname(x)) if pd.notna(x) else np.nan
+    # Update the 'emg_file' column with the new processed file path
+    df_idx["emg_file"] = df_idx["emg_file"].apply(
+        lambda orig: processed_map.get(os.path.basename(orig), np.nan)
     )
     
     # Drop rows that were not successfully processed.
@@ -437,9 +462,11 @@ def update_index_file(original_index, processed_paths, output_index_path):
     df_idx.to_csv(output_index_path, index=False)
     print(f"Updated index file saved to {output_index_path}")
 
+
+
 def main():
     base_dir = "/data1/dnicho26/EMG_DATASET/data/processed-server"
-    append_action = "_treadmill" 
+    append_action = "" 
 
     train_index = os.path.join(base_dir, f"index_train{append_action}.csv")
     val_index   = os.path.join(base_dir, f"index_val{append_action}.csv")
@@ -456,8 +483,8 @@ def main():
     os.makedirs(figure_dir, exist_ok=True)
     os.makedirs(scaler_dir, exist_ok=True)
     debug_std = False
-    apply_scaling = True
-    plotting=False
+    apply_scaling = False
+    plotting=True
 
     print("Processing TRAIN dataset...")
     train_dfs, train_paths, train_dropped = process_dataset(train_index, "TRAIN", data_dir, debug_std)

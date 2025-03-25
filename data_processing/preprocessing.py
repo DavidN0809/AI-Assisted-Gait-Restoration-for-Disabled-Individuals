@@ -20,7 +20,6 @@ class Configuration:
         self.test_split = test_split
 
 # Update this to your base directory.
-#base_dir = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
 base_dir = "/data1/dnicho26/EMG_DATASET/"
 config = Configuration(root=base_dir)
 
@@ -96,6 +95,27 @@ def check_and_fix_sensors(df):
         return None
 
 # -------------------------------
+# New Normalization Function
+# -------------------------------
+def normalize_dataframe(df, clip_threshold=3):
+    """
+    Normalize numeric columns (excluding 'time') using z-score normalization.
+    Values are clipped to the range [-clip_threshold, clip_threshold].
+    """
+    for col in df.columns:
+        if col.lower() == "time":
+            continue  # Skip normalization for time column.
+        if pd.api.types.is_numeric_dtype(df[col]):
+            mean_val = df[col].mean()
+            std_val = df[col].std()
+            if std_val != 0:
+                # Compute z-score normalization
+                normalized = (df[col] - mean_val) / std_val
+                # Clip outliers to handle extreme values
+                df[col] = normalized.clip(-clip_threshold, clip_threshold)
+    return df
+
+# -------------------------------
 # Function to process a single CSV file
 # -------------------------------
 def process_file(file_path, raw_dir, processed_dir):
@@ -130,6 +150,11 @@ def process_file(file_path, raw_dir, processed_dir):
                 if abs(computed_sample_rate - 1259.259) > 1:
                     print(f"Dropping file {file_path} due to sample rate mismatch: computed {computed_sample_rate:.3f} Hz")
                     return None
+
+        # -------------------------------
+        # Apply normalization per column
+        # -------------------------------
+        df = normalize_dataframe(df)
 
         # Prepare output directory and save the processed file
         rel_path = os.path.relpath(file_path, raw_dir)
