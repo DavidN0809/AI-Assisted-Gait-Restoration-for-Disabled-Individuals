@@ -166,12 +166,12 @@ def main(base_directory):
     else:
         print(missing_df.to_string(index=False))
     
-    # print("\n=== CSV Files with Out-of-Range Sensors (Sensor numbers not in 0–5) ===")
-    # if out_of_range_df.empty:
-    #     print("None")
-    # else:
-    #     print(out_of_range_df.to_string(index=False))
+    print("\n=== CSV Files with Out-of-Range Sensors (Sensor numbers not in 0–5) ===")
+    if out_of_range_df.empty:
+        print("None")
+    else:
+        print(out_of_range_df.to_string(index=False))
 
 # Set your base directory below.
-base_directory = r"D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
+base_directory = r"/data1/dnicho26/EMG_DATASET/data/data"
 main(base_directory)

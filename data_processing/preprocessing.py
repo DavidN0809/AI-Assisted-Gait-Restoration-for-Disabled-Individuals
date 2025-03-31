@@ -135,26 +135,26 @@ def process_file(file_path, raw_dir, processed_dir):
             print(f"Skipping file {file_path} due to sensor requirements.")
             return None
 
-        # Check sample rate if "time" column exists.
-        if "time" in df.columns:
-            # Compute time differences and use median as representative dt
-            time_diffs = df["time"].diff().dropna()
-            if not time_diffs.empty:
-                median_dt = time_diffs.median()
-                # Avoid division by zero
-                if median_dt == 0:
-                    print(f"File {file_path} has zero time difference. Skipping file.")
-                    return None
-                computed_sample_rate = 1 / median_dt
-                # Allow a tolerance of 1 Hz around 1259.259 Hz
-                if abs(computed_sample_rate - 1259.259) > 1:
-                    print(f"Dropping file {file_path} due to sample rate mismatch: computed {computed_sample_rate:.3f} Hz")
-                    return None
+        # # Check sample rate if "time" column exists.
+        # if "time" in df.columns:
+        #     # Compute time differences and use median as representative dt
+        #     time_diffs = df["time"].diff().dropna()
+        #     if not time_diffs.empty:
+        #         median_dt = time_diffs.median()
+        #         # Avoid division by zero
+        #         if median_dt == 0:
+        #             print(f"File {file_path} has zero time difference. Skipping file.")
+        #             return None
+        #         computed_sample_rate = 1 / median_dt
+        #         # Allow a tolerance of 1 Hz around 1259.259 Hz
+        #         if abs(computed_sample_rate - 1259.259) > 1:
+        #             print(f"Dropping file {file_path} due to sample rate mismatch: computed {computed_sample_rate:.3f} Hz")
+        #             return None
 
         # -------------------------------
         # Apply normalization per column
         # -------------------------------
-        df = normalize_dataframe(df)
+        # df = normalize_dataframe(df)
 
         # Prepare output directory and save the processed file
         rel_path = os.path.relpath(file_path, raw_dir)
@@ -221,21 +221,26 @@ if __name__ == "__main__":
     print(f"Found {len(csv_files)} CSV files in {raw_dir}")
 
     processed_files = []
-    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+    with ProcessPoolExecutor(max_workers=32) as executor:
         futures = {executor.submit(process_file, file, raw_dir, processed_dir): file for file in csv_files}
         for future in tqdm(as_completed(futures), total=len(futures), desc="Processing CSV files", unit="file"):
             result = future.result()
             if result is not None:
                 processed_files.append(result)
     
-    print(f"Successfully processed {len(processed_files)} files.")
+    # for file in tqdm(csv_files, desc="Processing CSV files", unit="file"):
+    #     result = process_file(file, raw_dir, processed_dir)
+    #     if result is not None:
+    #         processed_files.append(result)
 
-    action_filter = "_treadmill"
-    # Check if the action appears as a directory in the file path.
-    filter_processed_files = [f for f in processed_files if os.path.sep + action_filter + os.path.sep in f.lower()]
-    suffix = f"{action_filter}"
-    print(f"After filtering, {len(filter_processed_files)} files remain for action: {action_filter}")
+    # print(f"Successfully processed {len(processed_files)} files.")
 
-    create_index(filter_processed_files, action_filter)
-    create_index(processed_files, "")
+    # action_filter = "_treadmill"
+    # # Check if the action appears as a directory in the file path.
+    # filter_processed_files = [f for f in processed_files if os.path.sep + action_filter + os.path.sep in f.lower()]
+    # suffix = f"{action_filter}"
+    # print(f"After filtering, {len(filter_processed_files)} files remain for action: {action_filter}")
+
+    # create_index(filter_processed_files, action_filter)
+    # create_index(processed_files, "")
     # Note: The following exception about a 'NoneType' object during ProcessPoolExecutor shutdown can be safely ignored.
