@@ -2,245 +2,157 @@
 import os
 import re
 import pandas as pd
-from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from tqdm import tqdm
 import random
-from concurrent.futures import ThreadPoolExecutor
 
-# -------------------------------
-# Minimal Configuration for dataset paths and splits
-# -------------------------------
-class Configuration:
-    def __init__(self, root, train_split=0.7, val_split=0.10, test_split=0.20):
-        self.root = root
-        self.raw = os.path.join(root, "data/data")        # raw CSV files
-        self.processed = os.path.join(root, "data/processed-server")
-        self.train_split = train_split
-        self.val_split = val_split
-        self.test_split = test_split
+# --- User Settings ---
+base_dir = "/data1/dnicho26/EMG_DATASET"
+raw_dir = os.path.join(base_dir, "data/data")          # where raw CSVs reside
+processed_dir = os.path.join(base_dir, "data/processed")
+os.makedirs(processed_dir, exist_ok=True)
 
-# Update this to your base directory.
-base_dir = "/data1/dnicho26/EMG_DATASET/"
-config = Configuration(root=base_dir)
-
-def find_csv_in_subdir(subdir):
+# --- Helper Functions ---
+def find_csv_files(directory):
+    """Recursively find all CSV files under the given directory, skipping folders with 'camera'."""
     csv_files = []
-    for root, dirs, files in os.walk(subdir, topdown=True):
-        # Remove any directories with "camera" in their name (case insensitive)
+    for root, dirs, files in os.walk(directory):
         dirs[:] = [d for d in dirs if "camera" not in d.lower()]
         for file in files:
-            if file.lower().endswith('.csv'):
+            if file.lower().endswith(".csv"):
                 csv_files.append(os.path.join(root, file))
     return csv_files
 
-def find_csv_files(directory):
-    csv_files = []
-    # Get immediate subdirectories
-    subdirs = [os.path.join(directory, d) for d in os.listdir(directory)
-               if os.path.isdir(os.path.join(directory, d))]
+def fix_sensor_columns(df):
+    """
+    Automatically verify and fix sensor columns.
+    Expected sensor groups: "sensor X ..." where X is in 0-5.
     
-    with ThreadPoolExecutor() as executor:
-        futures = [executor.submit(find_csv_in_subdir, subdir) for subdir in subdirs]
-        for future in futures:
-            csv_files.extend(future.result())
-    
-    return csv_files
+    This function:
+      1. Groups sensor columns (using a regex) by their sensor number.
+      2. Determines which valid sensor numbers (0–5) are missing.
+      3. For each invalid sensor group (e.g. sensor 7), it renames *all* its columns
+         to a missing sensor number (the smallest missing one is used first).
+      4. Prints details for each renaming.
+      
+    If after remapping the complete set {0,1,2,3,4,5} is not present, returns None.
+    """
+    sensor_pattern = re.compile(r'(?i)^(sensor)\s*(\d+)(.*)$')
+    valid_set = set(range(6))  # expected sensor groups: 0-5
 
-# -------------------------------
-# Sensor Name Fixing Function
-# -------------------------------
-def check_and_fix_sensors(df):
-    sensor_regex = re.compile(r'(?i)^(sensor)\s*(\d+)(.*)$')
-    valid_set = set(range(6))  # Valid sensor numbers: 0 to 5
-    sensor_cols = [col for col in df.columns if col.lower().startswith("sensor")]
-    
-    present_valid = set()
-    for col in sensor_cols:
-        m = sensor_regex.match(col)
+    # Group columns by sensor number.
+    sensor_groups = {}  # sensor number -> list of column names
+    for col in df.columns:
+        m = sensor_pattern.match(col)
         if m:
             num = int(m.group(2))
-            if num in valid_set:
-                present_valid.add(num)
+            sensor_groups.setdefault(num, []).append(col)
     
-    missing = valid_set - present_valid
-    if not missing:
-        return df  # All sensors are present.
+    present = set(num for num in sensor_groups if num in valid_set)
+    missing = sorted(list(valid_set - present))
     
-    missing_sensor = min(missing)
-    new_mapping = {}
-    for col in sensor_cols:
-        m = sensor_regex.match(col)
-        if m:
-            num = int(m.group(2))
-            if num not in valid_set:
-                new_name = f"{m.group(1).lower()} {missing_sensor}{m.group(3)}"
-                new_mapping[col] = new_name
-
-    if new_mapping:
-        df = df.rename(columns=new_mapping)
+    # Find invalid sensor groups (those not in the expected range)
+    invalid_groups = {num: cols for num, cols in sensor_groups.items() if num not in valid_set}
     
-    sensor_cols = [col for col in df.columns if col.lower().startswith("sensor")]
-    present_valid = set()
-    for col in sensor_cols:
-        m = sensor_regex.match(col)
-        if m:
-            num = int(m.group(2))
-            if num in valid_set:
-                present_valid.add(num)
-                
-    if valid_set.issubset(present_valid):
-        return df
-    else:
-        print(f"After renaming, not all sensors 0-5 are present (found {present_valid}). Skipping file.")
+    # If no invalid groups and some valid sensors are missing, there's nothing to remap.
+    if missing and not invalid_groups:
+        print(f"Skipping file because sensors are incomplete. Found sensors: {present}")
         return None
 
-# -------------------------------
-# New Normalization Function
-# -------------------------------
-def normalize_dataframe(df, clip_threshold=3):
-    """
-    Normalize numeric columns (excluding 'time') using z-score normalization.
-    Values are clipped to the range [-clip_threshold, clip_threshold].
-    """
+    rename_mapping = {}
+    # For each invalid group in sorted order, assign a missing sensor number if available.
+    for invalid_num in sorted(invalid_groups.keys()):
+        if not missing:
+            break
+        target = missing.pop(0)
+        for col in invalid_groups[invalid_num]:
+            m = sensor_pattern.match(col)
+            suffix = m.group(3) if m else ""
+            new_name = f"sensor {target}{suffix}"
+            rename_mapping[col] = new_name
+            print(f"Renaming '{col}' (sensor {invalid_num}) to '{new_name}'")
+    
+    # Apply the renaming
+    df = df.rename(columns=rename_mapping)
+
+    # Verify that sensor groups now are exactly valid_set.
+    sensor_groups_after = set()
     for col in df.columns:
-        if col.lower() == "time":
-            continue  # Skip normalization for time column.
-        if pd.api.types.is_numeric_dtype(df[col]):
-            mean_val = df[col].mean()
-            std_val = df[col].std()
-            if std_val != 0:
-                # Compute z-score normalization
-                normalized = (df[col] - mean_val) / std_val
-                # Clip outliers to handle extreme values
-                df[col] = normalized.clip(-clip_threshold, clip_threshold)
+        m = sensor_pattern.match(col)
+        if m:
+            sensor_groups_after.add(int(m.group(2)))
+    if sensor_groups_after != valid_set:
+        print(f"Warning: After renaming, sensors present: {sensor_groups_after}, expected: {valid_set}.")
+        return None
+
     return df
 
-# -------------------------------
-# Function to process a single CSV file
-# -------------------------------
-def process_file(file_path, raw_dir, processed_dir):
+def process_file(file_path):
+    """
+    Process one CSV file:
+      - Read CSV.
+      - Remove all time columns except "time 0" and rename "time 0" to "time".
+      - Remove sensor columns containing "IMP".
+      - Verify that the resulting DataFrame has 43 columns.
+      - Fix sensor columns so that sensors 0-5 exist.
+      - Save the processed CSV under the processed directory preserving relative path.
+    """
     try:
         df = pd.read_csv(file_path, header=0)
+        # Strip extra whitespace from column names.
         df.columns = df.columns.astype(str).str.strip()
-        
-        # Remove extra time columns and rename "time 0" to "time"
+
+        # 1. Remove all time columns except "time 0" and rename it to "time".
         time_cols = [col for col in df.columns if col.lower().startswith("time") and col.lower() != "time 0"]
         if time_cols:
             df.drop(columns=time_cols, inplace=True)
         if "time 0" in df.columns:
             df.rename(columns={"time 0": "time"}, inplace=True)
-        
-        df = check_and_fix_sensors(df)
-        if df is None:
-            print(f"Skipping file {file_path} due to sensor requirements.")
+        else:
+            print(f"File {file_path} missing 'time 0' column. Skipping.")
             return None
 
-        # # Check sample rate if "time" column exists.
-        # if "time" in df.columns:
-        #     # Compute time differences and use median as representative dt
-        #     time_diffs = df["time"].diff().dropna()
-        #     if not time_diffs.empty:
-        #         median_dt = time_diffs.median()
-        #         # Avoid division by zero
-        #         if median_dt == 0:
-        #             print(f"File {file_path} has zero time difference. Skipping file.")
-        #             return None
-        #         computed_sample_rate = 1 / median_dt
-        #         # Allow a tolerance of 1 Hz around 1259.259 Hz
-        #         if abs(computed_sample_rate - 1259.259) > 1:
-        #             print(f"Dropping file {file_path} due to sample rate mismatch: computed {computed_sample_rate:.3f} Hz")
-        #             return None
+        # 2. Remove all sensor columns containing "IMP" (case insensitive).
+        imp_cols = [col for col in df.columns if "imp" in col.lower()]
+        if imp_cols:
+            df.drop(columns=imp_cols, inplace=True)
 
-        # -------------------------------
-        # Apply normalization per column
-        # -------------------------------
-        # df = normalize_dataframe(df)
+        # 3. Check column count.
+        if df.shape[1] != 44:
+            print(f"File {file_path} skipped because column count after time/IMP removal is {df.shape[1]} (expected 43).")
+            return None
 
-        # Prepare output directory and save the processed file
+        # 4. Fix sensor columns so that sensors 0-5 exist.
+        df = fix_sensor_columns(df)
+        if df is None:
+            print(f"File {file_path} skipped due to sensor column issues after fixing.")
+            return None
+
+        # Save processed CSV maintaining relative path structure.
         rel_path = os.path.relpath(file_path, raw_dir)
-        rel_dir = os.path.dirname(rel_path)
-        output_dir_full = os.path.join(processed_dir, rel_dir)
-        os.makedirs(output_dir_full, exist_ok=True)
+        out_dir = os.path.join(processed_dir, os.path.dirname(rel_path))
+        os.makedirs(out_dir, exist_ok=True)
+        out_file = os.path.join(out_dir, os.path.basename(file_path))
+        df.to_csv(out_file, index=False)
+        return out_file
 
-        base_filename = os.path.splitext(os.path.basename(file_path))[0]
-        output_csv = os.path.join(output_dir_full, f"{base_filename}.csv")
-        df.to_csv(output_csv, index=False)
-        return output_csv
     except Exception as e:
         print(f"Error processing {file_path}: {e}")
         return None
 
-# -------------------------------
-# Update index CSV with processed file paths and number of frames
-# -------------------------------
-def update_index(processed_files, processed_dir, index_filename):
-    index_file = os.path.join(processed_dir, index_filename)
-    records = []
-    
-    for f in tqdm(processed_files, desc=f"Indexing {index_filename}", unit="file"):
-        try:
-            df = pd.read_csv(f)
-            frames = df.shape[0]
-            records.append({"emg_file": f, "frames": frames})
-        except Exception as e:
-            print(f"Error reading {f}: {e}")
-
-    df_index = pd.DataFrame(records)
-    df_index.to_csv(index_file, index=False)
-    print(f"Index updated: {index_file}")
-    return len(records)
-
-def create_index(processed_files, suffix):
-    # Shuffle and split processed files into train, validation, and test sets.
-    random.shuffle(processed_files)
-    n = len(processed_files)
-    train_end = int(n * config.train_split)
-    val_end = train_end + int(n * config.val_split)
-    train_files = processed_files[:train_end]
-    val_files = processed_files[train_end:val_end]
-    test_files = processed_files[val_end:]
-    
-    # Create three index files (optionally with an action suffix)
-    train_count = update_index(train_files, config.processed, f"index_train{suffix}.csv")
-    val_count = update_index(val_files, config.processed, f"index_val{suffix}.csv")
-    test_count = update_index(test_files, config.processed, f"index_test{suffix}.csv")
-    
-    print(f"Training index contains {train_count} files.")
-    print(f"Validation index contains {val_count} files.")
-    print(f"Test index contains {test_count} files.")
-
-# -------------------------------
-# Main Execution
-# -------------------------------
+# --- Main Execution ---
 if __name__ == "__main__":
-    processed_dir = config.processed
-    os.makedirs(processed_dir, exist_ok=True)
-    raw_dir = config.raw
-
     csv_files = find_csv_files(raw_dir)
-    print(f"Found {len(csv_files)} CSV files in {raw_dir}")
+    print(f"Found {len(csv_files)} CSV files.")
 
     processed_files = []
-    with ProcessPoolExecutor(max_workers=32) as executor:
-        futures = {executor.submit(process_file, file, raw_dir, processed_dir): file for file in csv_files}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing CSV files", unit="file"):
+    # Use ProcessPoolExecutor to process files in parallel.
+    with ProcessPoolExecutor() as executor:
+        futures = {executor.submit(process_file, file): file for file in csv_files}
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Processing files", unit="file"):
             result = future.result()
-            if result is not None:
+            if result:
                 processed_files.append(result)
-    
-    # for file in tqdm(csv_files, desc="Processing CSV files", unit="file"):
-    #     result = process_file(file, raw_dir, processed_dir)
-    #     if result is not None:
-    #         processed_files.append(result)
 
-    # print(f"Successfully processed {len(processed_files)} files.")
+    print(f"Successfully processed {len(processed_files)} files.")
 
-    # action_filter = "_treadmill"
-    # # Check if the action appears as a directory in the file path.
-    # filter_processed_files = [f for f in processed_files if os.path.sep + action_filter + os.path.sep in f.lower()]
-    # suffix = f"{action_filter}"
-    # print(f"After filtering, {len(filter_processed_files)} files remain for action: {action_filter}")
-
-    # create_index(filter_processed_files, action_filter)
-    # create_index(processed_files, "")
-    # Note: The following exception about a 'NoneType' object during ProcessPoolExecutor shutdown can be safely ignored.

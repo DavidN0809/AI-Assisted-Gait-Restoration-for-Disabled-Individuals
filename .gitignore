@@ -7,3 +7,4 @@ checkpoints/
 logs/
 runs/
 trials/
+*trials/

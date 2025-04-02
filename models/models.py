@@ -162,9 +162,6 @@ class RNNModel(nn.Module):
             out = out[:, -self.n_ahead:, :]
         return out
 
-import torch
-import torch.nn as nn
-
 class LSTMModel(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, num_classes, n_ahead):
         super(LSTMModel, self).__init__()
@@ -173,15 +170,38 @@ class LSTMModel(nn.Module):
         self.fc = nn.Linear(hidden_size, num_classes)
         self.n_ahead = n_ahead
         
-    def forward(self, x):
+        # Apply Xavier and orthogonal initialization to the weights.
+        self.init_weights()
+        
+    def init_weights(self):
+        # Initialize encoder weights
+        for name, param in self.encoder.named_parameters():
+            if 'weight_ih' in name:
+                nn.init.xavier_uniform_(param)
+            elif 'weight_hh' in name:
+                nn.init.orthogonal_(param)
+            elif 'bias' in name:
+                nn.init.constant_(param, 0)
+        # Initialize decoder weights
+        for name, param in self.decoder.named_parameters():
+            if 'weight_ih' in name:
+                nn.init.xavier_uniform_(param)
+            elif 'weight_hh' in name:
+                nn.init.orthogonal_(param)
+            elif 'bias' in name:
+                nn.init.constant_(param, 0)
+        # Initialize the fully connected layer
+        nn.init.xavier_uniform_(self.fc.weight)
+        nn.init.constant_(self.fc.bias, 0)
+    
+    def forward(self, x, target=None):
         batch_size = x.size(0)
         # Encode the input sequence
         _, (hidden, cell) = self.encoder(x)
         
-        # Initialize decoder input (you can also use the last value from x or a learned token)
-        decoder_input = torch.zeros(batch_size, 1, self.fc.out_features, device=x.device)
+        # Use the last time step of the input as the initial decoder input.
+        decoder_input = self.fc(hidden[-1]).unsqueeze(1)  # shape: [batch, 1, num_classes]
         outputs = []
-        
         # Generate predictions for n_ahead time steps
         for t in range(self.n_ahead):
             out, (hidden, cell) = self.decoder(decoder_input, (hidden, cell))
@@ -447,7 +467,7 @@ class TimeSeriesTransformer(nn.Module):
 class TemporalTransformer(nn.Module):
     def __init__(self, input_size, num_classes, d_model=64, nhead=8,
                  num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=128,
-                 dropout=0.1, n_ahead=10, max_len=5000):
+                 dropout=0.1, n_ahead=1, max_len=5000):
         super(TemporalTransformer, self).__init__()
         self.n_ahead = n_ahead
         self.d_model = d_model
@@ -474,11 +494,11 @@ class TemporalTransformer(nn.Module):
         out = self.output_projection(out)  # (batch, n_ahead, num_classes)
         return out
 
-# 6. Informer – A simplified version using standard transformer components.
+# 6. Informer – A version using standard transformer components.
 class Informer(nn.Module):
     def __init__(self, input_size, num_classes, d_model=64, nhead=8,
                  num_encoder_layers=3, num_decoder_layers=3, dim_feedforward=128,
-                 dropout=0.1, n_ahead=10):
+                 dropout=0.1, n_ahead=1):
         super(Informer, self).__init__()
         self.n_ahead = n_ahead
         self.d_model = d_model
@@ -505,7 +525,7 @@ class Informer(nn.Module):
 ##############################################################################
 # N-Beats Model
 ##############################################################################
-# 7. NBeats – A simplified fully-connected block-based model for time series forecasting.
+# 7. NBeats – A fully-connected block-based model for time series forecasting.
 class NBeatsBlock(nn.Module):
     def __init__(self, input_size, num_layers, hidden_size, output_size, expansion_coefficient_dim=4):
         super(NBeatsBlock, self).__init__()
@@ -526,19 +546,23 @@ class NBeatsBlock(nn.Module):
         backcast = theta[:, :self.output_size]
         forecast = theta[:, self.output_size:]
         return backcast, forecast
-
+    
 class NBeats(nn.Module):
     def __init__(self, input_size, num_stacks=3, num_blocks_per_stack=3, num_layers=4,
                  hidden_size=128, output_size=1):
         super(NBeats, self).__init__()
         self.stacks = nn.ModuleList()
         for _ in range(num_stacks):
-            blocks = nn.ModuleList([NBeatsBlock(input_size, num_layers, hidden_size, output_size)
-                                    for _ in range(num_blocks_per_stack)])
+            blocks = nn.ModuleList([
+                NBeatsBlock(input_size, num_layers, hidden_size, output_size)
+                for _ in range(num_blocks_per_stack)
+            ])
             self.stacks.append(blocks)
             
     def forward(self, x):
-        # x: (batch, input_size)
+        # If x has more than 2 dimensions, flatten the non-batch dimensions.
+        if x.dim() > 2:
+            x = x.view(x.size(0), -1)
         residual = x
         forecast = 0
         for blocks in self.stacks:
@@ -546,13 +570,13 @@ class NBeats(nn.Module):
                 backcast, block_forecast = block(residual)
                 residual = residual - backcast
                 forecast = forecast + block_forecast
-        # Adjust forecast shape to (batch, 1, output_size)
+        # Adjust forecast shape if needed.
         return forecast.unsqueeze(1)
 
 
 # Hybrid Transformer + LSTM model with auxiliary branch for temporal differences.
 class HybridTransformerLSTM(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes, n_ahead,
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, n_ahead=1,
                  d_model=64, nhead=8, num_encoder_layers=3):
         """
         Args:
@@ -601,59 +625,3 @@ class HybridTransformerLSTM(nn.Module):
         aux_output = self.auxiliary_fc(aux_input)    # (batch, n_ahead, num_classes)
         
         return main_output, aux_output
-
-        import math
-
-class MDN(nn.Module):
-    """
-    A simple Mixture Density Network (MDN) for time series regression.
-    This model outputs the parameters of a mixture of Gaussians:
-    - pi: mixture weights,
-    - sigma: standard deviations,
-    - mu: means.
-    """
-    def __init__(self, input_size, hidden_size, num_layers, num_mixtures, num_classes, n_ahead):
-        super(MDN, self).__init__()
-        self.n_ahead = n_ahead
-        self.num_mixtures = num_mixtures
-        self.num_classes = num_classes
-        
-        # An encoder LSTM to process the input sequence.
-        self.encoder = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        # A fully connected layer that outputs parameters for each time step.
-        # We output: mixture weights (pi), sigma and mu.
-        # For each forecast time step, we output num_mixtures values for pi and sigma,
-        # and num_mixtures * num_classes for mu.
-        self.fc = nn.Linear(hidden_size, num_mixtures * (2 + num_classes))
-        
-    def forward(self, x):
-        """
-        Args:
-            x: input of shape [batch, seq_len, input_size]
-        Returns:
-            A dict with keys "pi", "sigma", "mu" of shapes:
-            - pi: [batch, n_ahead, num_mixtures] (after softmax)
-            - sigma: [batch, n_ahead, num_mixtures] (after exp)
-            - mu: [batch, n_ahead, num_mixtures, num_classes]
-        """
-        batch_size = x.size(0)
-        # Get LSTM outputs.
-        out, _ = self.encoder(x)  # out: [batch, seq_len, hidden_size]
-        # For forecasting, take the last n_ahead steps (or just the last step and repeat).
-        # For simplicity, we use the last time step as summary and then repeat it n_ahead times.
-        last_out = out[:, -1, :]  # [batch, hidden_size]
-        repeated = last_out.unsqueeze(1).repeat(1, self.n_ahead, 1)  # [batch, n_ahead, hidden_size]
-        
-        fc_out = self.fc(repeated)  # [batch, n_ahead, num_mixtures*(2+num_classes)]
-        # Reshape to separate parameters.
-        fc_out = fc_out.view(batch_size, self.n_ahead, self.num_mixtures, -1)
-        # The last dimension is (2 + num_classes)
-        pi = fc_out[..., 0]  # [batch, n_ahead, num_mixtures]
-        sigma = fc_out[..., 1]  # [batch, n_ahead, num_mixtures]
-        mu = fc_out[..., 2:]  # [batch, n_ahead, num_mixtures, num_classes]
-        
-        # Apply activation functions: softmax to pi, exponential to sigma.
-        pi = F.softmax(pi, dim=-1)
-        sigma = torch.exp(sigma)
-        
-        return {"pi": pi, "sigma": sigma, "mu": mu}
