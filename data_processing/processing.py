@@ -69,11 +69,16 @@ def process_csv_file(input_csv, input_base_dir, output_base_dir):
         # Apply min-max normalization before resampling
         col_min = data.min()
         col_max = data.max()
+        # if col_max != col_min:
+        #     data = 2 * (data - col_min) / (col_max - col_min) - 1
+        # else:
+        #     data = np.zeros_like(data)
+        # Apply 0-1 scaling
         if col_max != col_min:
-            data = 2 * (data - col_min) / (col_max - col_min) - 1
+            data = (data - col_min) / (col_max - col_min)
         else:
             data = np.zeros_like(data)
-        
+
         block_size = int(round(freq / 10))
         if block_size <= 0:
             print(f"Invalid block size computed for column {col} in {input_csv}.")
@@ -151,60 +156,6 @@ def process_all_csvs_parallel(input_base_dir, output_base_dir):
                       desc="Processing CSV Files"):
             pass
 
-
-# ---------------------------
-# Sliding Windows Extraction (Aggregation)
-# ---------------------------
-
-def extract_sliding_windows_from_file(input_csv, lag=30, nahead=10, max_windows=20):
-    """
-    Reads a processed CSV file (one of the DS files), standardizes column names,
-    and extracts up to `max_windows` flattened sliding windows.
-    Returns a list of dictionaries.
-    """
-    df = pd.read_csv(input_csv, index_col=0)
-    
-    total_length = lag + nahead
-    windows = []
-    for start in range(max_windows):
-        if start + total_length <= len(df):
-            window_df = df.iloc[start:start+total_length].reset_index(drop=True)
-            flat = {}
-            for col in window_df.columns:
-                for t in range(lag):
-                    flat[f"{col}_lag{t}"] = window_df.loc[t, col]
-                for t in range(nahead):
-                    flat[f"{col}_nahead{t}"] = window_df.loc[t+lag, col]
-            windows.append(flat)
-        else:
-            break
-    return windows
-
-def create_sliding_windows_sample(output_base_dir, figures_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], lag=30, nahead=10, sample_windows=20):
-    """
-    For each dataset, extracts sliding windows from the first few CSV files
-    and saves the first sample_windows (flattened) into a single CSV file.
-    """
-    for ds in ds_list:
-        ds_path = os.path.join(output_base_dir, ds)
-        csv_files = sorted(glob(os.path.join(ds_path, "**", "*.csv"), recursive=True))
-        all_windows = []
-        for csv_file in csv_files:
-            windows = extract_sliding_windows_from_file(csv_file, lag, nahead, max_windows=sample_windows)
-            if windows:
-                all_windows.extend(windows)
-            if len(all_windows) >= sample_windows:
-                break
-        if all_windows:
-            sample = all_windows[:sample_windows]
-            df_sample = pd.DataFrame(sample)
-            output_dir = os.path.join(figures_dir, "datasets", ds)
-            os.makedirs(output_dir, exist_ok=True)
-            output_file = os.path.join(output_dir, "windows_sample.csv")
-            df_sample.to_csv(output_file, index=False)
-            print(f"Sliding windows sample saved to {output_file}")
-        else:
-            print(f"No sliding windows extracted for dataset {ds}")
 
 # ---------------------------
 # Index building for train/val/test splits
@@ -375,7 +326,6 @@ def plot_sliding_windows(output_base_dir, figures_dir, ds_list=["DS1", "DS2", "D
 def full_processing():
     input_base_dir = "/data1/dnicho26/EMG_DATASET/data/processed"
     output_base_dir = "/data1/dnicho26/EMG_DATASET/final-data"
-    figures_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/figures"
     
     print("Starting CSV processing...")
     process_all_csvs_parallel(input_base_dir, output_base_dir)
@@ -383,12 +333,6 @@ def full_processing():
     print("Building train/val/test indexes...")
     build_train_val_test_indexes(output_base_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], seed=42)
     
-    print("Extracting sliding window sample across each dataset (CSV output)...")
-    create_sliding_windows_sample(output_base_dir, figures_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], lag=30, nahead=10, sample_windows=20)
-    
-    print("Plotting sliding window example (PNG with subplots)...")
-    plot_sliding_windows(output_base_dir, figures_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], lag=30, nahead=10)
-
 def index_only():
     output_base_dir = "/data1/dnicho26/EMG_DATASET/final-data"
     print("Building train/val/test indexes only...")
@@ -399,19 +343,13 @@ def index_only():
         ds_files = glob(os.path.join(output_base_dir, ds, "**", "*.csv"), recursive=True)
         print(f"Total CSV files in {ds}: {len(ds_files)}")
 
-    # print("Extracting sliding window sample across each dataset (CSV output)...")
-    # create_sliding_windows_sample(output_base_dir, figures_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], lag=30, nahead=10, sample_windows=20)
-    
-    # print("Plotting sliding window example (PNG with subplots)...")
-    # plot_sliding_windows(output_base_dir, figures_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], lag=30, nahead=10)
-
 
 if __name__ == "__main__":
     # Uncomment argparse handling if running from command line
     # parser = argparse.ArgumentParser(description="Process CSVs and/or build indexes for DS folders.")
     # parser.add_argument("--index-only", action="store_true", help="Build index only, skipping CSV processing.")
     # args = parser.parse_args()
-    index_only_mode = True
+    index_only_mode = False
     if index_only_mode:
         index_only()
     else:

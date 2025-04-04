@@ -280,13 +280,12 @@ class RBM(nn.Module):
         self.bh.data += self.lr * dbh
         loss = torch.mean((v - neg_v_sample) ** 2)
         return loss
-    
+
+
 class DBN(nn.Module):
     """
     Deep Belief Network with layerwise RBM pretraining.
-    Inputs are expected to be 2D (batch, features). If a 3D tensor is provided,
-    it will be flattened. If n_ahead is provided, the final output is expanded 
-    along the forecast horizon.
+    If the input is sequential (3D) and n_ahead is provided, outputs only the last n_ahead steps.
     """
     def __init__(self, sizes, output_dim=6, k=1, rbm_lr=1e-3, n_ahead=None):
         super(DBN, self).__init__()
@@ -300,69 +299,18 @@ class DBN(nn.Module):
         self.n_ahead = n_ahead
 
     def forward(self, x):
-        # If x is 3D, flatten it so that x becomes (batch, lag * channels)
+        # If input is sequential, process each time step independently.
         if x.dim() > 2:
-            x = x.view(x.size(0), -1)
-        h = x
-        for rbm in self.rbms:
-            p_h, _ = rbm.sample_h(h)
-            h = p_h
-        out = self.final_layer(h)
-        if self.n_ahead is not None:
-            # Expand output along forecast horizon
-            out = out.unsqueeze(1).repeat(1, self.n_ahead, 1)
-        return out
-
-    def pretrain(self, data_loader, num_epochs=10, batch_size=128, lr_override=None, verbose=True):
-        """
-        Performs layerwise pretraining on the DBN using contrastive divergence.
-        
-        Args:
-          data_loader: DataLoader yielding input data. If the data is 3D, it will be flattened.
-          num_epochs: Number of epochs to train each RBM layer.
-          batch_size: Batch size for each pretraining step.
-          lr_override: Optional learning rate to override the RBM's default learning rate.
-          verbose: If True, prints progress.
-        """
-        # Accumulate all data from the data loader.
-        all_data = []
-        for batch in data_loader:
-            # If batch is a tuple, assume the first element is the input.
-            X = batch[0] if isinstance(batch, (tuple, list)) else batch
-            if X.dim() > 2:
-                X = X.view(X.size(0), -1)
-            all_data.append(X)
-        current_data = torch.cat(all_data, dim=0).to(next(self.parameters()).device)
-        
-        for i, rbm in enumerate(self.rbms):
-            if verbose:
-                print(f"Pretraining RBM layer {i+1}/{self.num_rbm_layers}")
-            optimizer = torch.optim.SGD(rbm.parameters(), lr=lr_override if lr_override is not None else rbm.lr)
-            for epoch in range(num_epochs):
-                permutation = torch.randperm(current_data.size(0))
-                epoch_loss = 0.0
-                for j in range(0, current_data.size(0), batch_size):
-                    indices = permutation[j:j+batch_size]
-                    batch_data = current_data[indices]
-                    loss = rbm.contrastive_divergence(batch_data)
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    epoch_loss += loss.item() * batch_data.size(0)
-                epoch_loss /= current_data.size(0)
-                if verbose:
-                    print(f"  Epoch {epoch+1}/{num_epochs}: Loss = {epoch_loss:.6f}")
-            # After training this RBM, update current_data to its hidden representation.
-            with torch.no_grad():
-                p_h, _ = rbm.sample_h(current_data)
-                current_data = p_h
-
-
-
-
-##############################################################################
-# LSTMFULL
-##############################################################################
+            b, t, d = x.size()
+            x = x.view(b * t, d)
+            h = x
+            for rbm in self.rbms:
+                p_h, _ = rbm.sample_h(h)
+                h = p_h
+            out = self.final_layer(h)
+            out = out.view(b, t, -1)
+            if self.n_ahead is not None:
+                out = out[:, -self.n_ahead:, :]
 
 # 1. LSTMFullSequence – Many-to-many LSTM that applies a fully connected layer to each time step.
 class LSTMFullSequence(nn.Module):
@@ -379,56 +327,69 @@ class LSTMFullSequence(nn.Module):
         if self.n_ahead is not None:
             out = out[:, -self.n_ahead:, :]
         return out
-    
-##############################################################################
-# LSTMAuto
-##############################################################################
-class LSTMAutoencoder(nn.Module):
-    def __init__(self, input_size, hidden_size, num_layers, num_classes, n_ahead):
-        """
-        A sequence-to-sequence LSTM autoencoder for time series forecasting.
-        This model is non-autoregressive: the decoder decodes all forecast steps in parallel.
-        
-        Args:
-          input_size: Dimensionality of the input features.
-          hidden_size: Size of the LSTM hidden state.
-          num_layers: Number of LSTM layers for both encoder and decoder.
-          num_classes: Output dimension per forecast time step.
-          n_ahead: Number of forecast steps.
-        """
-        super(LSTMAutoencoder, self).__init__()
-        self.n_ahead = n_ahead
-        
-        # Encoder: process the input sequence and produce a latent representation.
+
+# 2. LSTMAutoregressive – Encoder with an autoregressive decoder. Optionally uses teacher forcing.
+class LSTMAutoregressive(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, n_ahead, teacher_forcing_ratio=0.5):
+        super(LSTMAutoregressive, self).__init__()
         self.encoder = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        
-        # Decoder: decode the latent representation in one shot without autoregression.
-        self.decoder = nn.LSTM(hidden_size, hidden_size, num_layers, batch_first=True)
-        
-        # Fully connected layer to map the decoder output to the forecast.
+        self.decoder = nn.LSTM(num_classes, hidden_size, num_layers, batch_first=True)
         self.fc = nn.Linear(hidden_size, num_classes)
-        
-    def forward(self, x):
-        """
-        Args:
-          x: Input sequence of shape (batch, seq_len, input_size)
-          
-        Returns:
-          Forecast of shape (batch, n_ahead, num_classes)
-        """
-        batch_size, seq_len, _ = x.size()
-        # Encode the input sequence.
+        self.n_ahead = n_ahead
+        self.teacher_forcing_ratio = teacher_forcing_ratio
+
+    def forward(self, x, target=None):
+        # x: (batch, seq_len, input_size)
+        batch_size = x.size(0)
         _, (hidden, cell) = self.encoder(x)
-        
-        # Create a fixed decoder input: here we use zeros repeated n_ahead times.
-        decoder_input = torch.zeros(batch_size, self.n_ahead, hidden.size(-1), device=x.device)
-        
-        # Decode the forecast in parallel.
-        decoder_output, _ = self.decoder(decoder_input, (hidden, cell))
-        
-        # Map the decoder output to the final forecast.
-        out = self.fc(decoder_output)
-        return out
+        # Initialize decoder input with zeros (or use a learned token)
+        decoder_input = torch.zeros(batch_size, 1, self.fc.out_features, device=x.device)
+        outputs = []
+        for t in range(self.n_ahead):
+            out, (hidden, cell) = self.decoder(decoder_input, (hidden, cell))
+            pred = self.fc(out)  # (batch, 1, num_classes)
+            outputs.append(pred)
+            # Teacher forcing: if target provided and random chance meets ratio, use ground truth
+            if target is not None and torch.rand(1).item() < self.teacher_forcing_ratio:
+                decoder_input = target[:, t:t+1, :]
+            else:
+                decoder_input = pred
+        outputs = torch.cat(outputs, dim=1)  # (batch, n_ahead, num_classes)
+        return outputs
+
+# 3. LSTMDecoder – Uses a separate decoder with a simple attention mechanism.
+class LSTMDecoder(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers, num_classes, n_ahead):
+        super(LSTMDecoder, self).__init__()
+        self.encoder = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.decoder = nn.LSTMCell(num_classes, hidden_size)
+        self.attn = nn.Linear(hidden_size * 2, hidden_size)
+        self.fc = nn.Linear(hidden_size, num_classes)
+        self.n_ahead = n_ahead
+
+    def forward(self, x):
+        # x: (batch, seq_len, input_size)
+        batch_size, seq_len, _ = x.size()
+        encoder_outputs, (hidden, cell) = self.encoder(x)  # encoder_outputs: (batch, seq_len, hidden_size)
+        # Use the last encoder output as the initial decoder hidden state
+        decoder_hidden = hidden[-1]  # (batch, hidden_size)
+        decoder_cell = cell[-1]      # (batch, hidden_size)
+        # Start token for decoder input (zeros)
+        decoder_input = torch.zeros(batch_size, self.fc.out_features, device=x.device)
+        outputs = []
+        for t in range(self.n_ahead):
+            # Compute attention weights over encoder outputs
+            attn_weights = torch.bmm(encoder_outputs, decoder_hidden.unsqueeze(2)).squeeze(2)  # (batch, seq_len)
+            attn_weights = F.softmax(attn_weights, dim=1)
+            context = torch.bmm(attn_weights.unsqueeze(1), encoder_outputs).squeeze(1)  # (batch, hidden_size)
+            # Combine context and decoder input
+            decoder_input_combined = decoder_input + context  # simple additive combination
+            decoder_hidden, decoder_cell = self.decoder(decoder_input_combined, (decoder_hidden, decoder_cell))
+            pred = self.fc(decoder_hidden)  # (batch, num_classes)
+            outputs.append(pred.unsqueeze(1))
+            decoder_input = pred  # autoregressive
+        outputs = torch.cat(outputs, dim=1)  # (batch, n_ahead, num_classes)
+        return outputs
 
 ##############################################################################
 # Transformer-based Models
@@ -458,9 +419,7 @@ class TimeSeriesTransformer(nn.Module):
         out = self.transformer(src, tgt)  # (batch, n_ahead, d_model)
         out = self.output_projection(out)  # (batch, n_ahead, num_classes)
         return out
-##############################################################################
-# Temporal Transformer Model
-##############################################################################
+
 # 5. TemporalTransformer – Similar to TimeSeriesTransformer but uses learned positional embeddings.
 class TemporalTransformer(nn.Module):
     def __init__(self, input_size, num_classes, d_model=64, nhead=8,
@@ -491,9 +450,7 @@ class TemporalTransformer(nn.Module):
         out = self.transformer(src, tgt)  # (batch, n_ahead, d_model)
         out = self.output_projection(out)  # (batch, n_ahead, num_classes)
         return out
-##############################################################################
-# Informer Model
-##############################################################################
+
 # 6. Informer – A version using standard transformer components.
 class Informer(nn.Module):
     def __init__(self, input_size, num_classes, d_model=64, nhead=8,
@@ -525,109 +482,45 @@ class Informer(nn.Module):
 ##############################################################################
 # N-Beats Model
 ##############################################################################
-import math
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-# --------------------------
-# Generic Block (NBeatsGenericBlock)
-# --------------------------
-class NBeatsGenericBlock(nn.Module):
+class NBeatsBlock(nn.Module):
     def __init__(self, input_size, num_layers, hidden_size, output_size, n_ahead=1):
-        """
-        A generic N‑BEATS block consisting of a stack of fully-connected layers
-        with ReLU activations, followed by a linear layer outputting a theta vector.
-        The theta vector is split into a backcast (explaining the input) and a forecast.
-        """
-        super(NBeatsGenericBlock, self).__init__()
-        self.backcast_size = input_size  # original (flattened) input dimension
-        self.n_ahead = n_ahead
-        self.output_size = output_size
-        
-        layers = []
-        # First layer maps input_size to hidden_size, then hidden_size layers
-        layers.append(nn.Linear(input_size, hidden_size))
-        layers.append(nn.ReLU())
+        super(NBeatsBlock, self).__init__()
+        self.backcast_size = input_size  # store original input dimension
+        self.fc_layers = nn.ModuleList()
+        self.fc_layers.append(nn.Linear(input_size, hidden_size))
         for _ in range(num_layers - 1):
-            layers.append(nn.Linear(hidden_size, hidden_size))
-            layers.append(nn.ReLU())
-        self.fc_layers = nn.Sequential(*layers)
-        # Final linear layer outputs theta, of size = backcast_size + output_size * n_ahead
-        self.theta = nn.Linear(hidden_size, self.backcast_size + output_size * n_ahead)
+            self.fc_layers.append(nn.Linear(hidden_size, hidden_size))
+        # Theta predicts both the backcast (size: input_size) and the forecast (size: output_size * n_ahead)
+        self.theta = nn.Linear(hidden_size, input_size + output_size * n_ahead)
+        self.output_size = output_size
+        self.n_ahead = n_ahead
 
     def forward(self, x):
-        # x shape: (batch, input_size)
-        x = self.fc_layers(x)
+        for layer in self.fc_layers:
+            x = F.relu(layer(x))
         theta = self.theta(x)
-        # First part is the backcast, second part is the forecast
+        # Use the stored original input dimension for slicing:
         backcast = theta[:, :self.backcast_size]
         forecast = theta[:, self.backcast_size:]
         forecast = forecast.view(x.size(0), self.n_ahead, self.output_size)
         return backcast, forecast
 
-# --------------------------
-# Trend Block (Interpretable Block)
-# --------------------------
-class NBeatsTrendBlock(nn.Module):
-    def __init__(self, input_size, n_ahead, degree):
-        """
-        A trend block that uses a polynomial basis expansion.
-        The block learns the coefficients (theta) for a polynomial of a given degree.
-        The backcast is produced by projecting theta onto a basis defined on the input time indices,
-        and the forecast similarly uses a basis defined on the forecast horizon.
-        """
-        super(NBeatsTrendBlock, self).__init__()
-        self.input_size = input_size
-        self.n_ahead = n_ahead
-        self.degree = degree
-        self.theta_layer = nn.Linear(input_size, degree + 1)
-        
-        # Precompute the basis for backcast and forecast (these are registered as buffers so they are moved with the model)
-        backcast_time = torch.linspace(0, 1, input_size).unsqueeze(1)  # shape: (input_size, 1)
-        forecast_time = torch.linspace(0, 1, n_ahead).unsqueeze(1)       # shape: (n_ahead, 1)
-        self.register_buffer('backcast_basis', torch.cat([backcast_time ** i for i in range(degree + 1)], dim=1))  # (input_size, degree+1)
-        self.register_buffer('forecast_basis', torch.cat([forecast_time ** i for i in range(degree + 1)], dim=1))  # (n_ahead, degree+1)
 
-    def forward(self, x):
-        # x: (batch, input_size)
-        theta = self.theta_layer(x)  # (batch, degree+1)
-        # The backcast is given by projecting the polynomial coefficients on the backcast basis
-        backcast = torch.matmul(theta, self.backcast_basis.t())  # (batch, input_size)
-        forecast = torch.matmul(theta, self.forecast_basis.t())  # (batch, n_ahead)
-        # Reshape forecast to have output_size dimension = 1 (or you can modify if multivariate)
-        forecast = forecast.unsqueeze(2)  # (batch, n_ahead, 1)
-        return backcast, forecast
-
-# --------------------------
-# NBeats Model Combining Blocks
-# --------------------------
 class NBeats(nn.Module):
     def __init__(self, input_size, num_stacks=3, num_blocks_per_stack=3, num_layers=4,
-                 hidden_size=128, output_size=1, n_ahead=1, block_type='generic', trend_degree=2):
-        """
-        N‑BEATS model.
-        - input_size: the flattened input dimension (lag * number_of_channels)
-        - num_stacks: number of stacks (groups) of blocks
-        - num_blocks_per_stack: number of blocks in each stack
-        - block_type: either 'generic' or 'trend' (you can add seasonality similarly)
-        - trend_degree: degree of the polynomial for trend blocks
-        """
+                 hidden_size=128, output_size=1, n_ahead=1):
         super(NBeats, self).__init__()
         self.n_ahead = n_ahead
         self.stacks = nn.ModuleList()
         for _ in range(num_stacks):
-            blocks = nn.ModuleList()
-            for _ in range(num_blocks_per_stack):
-                if block_type == 'trend':
-                    block = NBeatsTrendBlock(input_size, n_ahead, degree=trend_degree)
-                else:  # default to generic block
-                    block = NBeatsGenericBlock(input_size, num_layers, hidden_size, output_size, n_ahead=n_ahead)
-                blocks.append(block)
+            blocks = nn.ModuleList([
+                NBeatsBlock(input_size, num_layers, hidden_size, output_size, n_ahead=n_ahead)
+                for _ in range(num_blocks_per_stack)
+            ])
             self.stacks.append(blocks)
-
+            
     def forward(self, x):
-        # x: if sequential, shape (batch, lag, channels) and we flatten it to (batch, lag*channels)
+        # Flatten input if it is sequential: (batch, lag, channels) -> (batch, lag * channels)
         if x.dim() > 2:
             x = x.view(x.size(0), -1)
         residual = x
@@ -635,24 +528,23 @@ class NBeats(nn.Module):
         for blocks in self.stacks:
             for block in blocks:
                 backcast, block_forecast = block(residual)
-                residual = residual - backcast  # update residual
-                forecast = forecast + block_forecast  # aggregate forecast from blocks
+                residual = residual - backcast
+                forecast = forecast + block_forecast
         return forecast
 
 
+# Hybrid Transformer + LSTM model with auxiliary branch for temporal differences.
 class HybridTransformerLSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, num_classes, n_ahead=1,
                  d_model=64, nhead=8, num_encoder_layers=3):
         """
-        Hybrid Transformer + LSTM model for forecasting.
-        
         Args:
           input_size: Number of input channels.
           hidden_size: Hidden size for the LSTM decoder.
           num_layers: Number of layers for the LSTM decoder.
           num_classes: Output channels.
           n_ahead: Forecast horizon.
-          d_model: Embedding dimension for the transformer.
+          d_model: Embedding dimension for transformer.
           nhead: Number of attention heads.
           num_encoder_layers: Number of transformer encoder layers.
         """
@@ -662,27 +554,33 @@ class HybridTransformerLSTM(nn.Module):
         # Transformer encoder to capture global context.
         self.input_projection = nn.Linear(input_size, d_model)
         self.positional_encoding = PositionalEncoding(d_model, dropout=0.1)
-        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward=128, 
-                                                    dropout=0.1, batch_first=True)
+        encoder_layer = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward=128, dropout=0.1, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_encoder_layers)
         
         # LSTM decoder to produce the forecast.
         self.lstm_decoder = nn.LSTM(d_model, hidden_size, num_layers, batch_first=True)
         self.fc_out = nn.Linear(hidden_size, num_classes)
         
+        # Auxiliary branch: Predict temporal differences (trend)
+        self.auxiliary_fc = nn.Linear(d_model, num_classes)
+        
     def forward(self, x):
         # x: (batch, seq_len, input_size)
         batch_size, seq_len, _ = x.size()
         # Transformer encoder:
-        proj = self.input_projection(x)         # (batch, seq_len, d_model)
+        proj = self.input_projection(x)  # (batch, seq_len, d_model)
         proj = self.positional_encoding(proj)
         enc_out = self.transformer_encoder(proj)  # (batch, seq_len, d_model)
         
         # Use the last encoder output as the context vector for the decoder.
-        context = enc_out[:, -1:, :]              # (batch, 1, d_model)
+        context = enc_out[:, -1:, :]  # (batch, 1, d_model)
         # Repeat context for each forecast step.
         decoder_input = context.repeat(1, self.n_ahead, 1)  # (batch, n_ahead, d_model)
         lstm_out, _ = self.lstm_decoder(decoder_input)
-        main_output = self.fc_out(lstm_out)       # (batch, n_ahead, num_classes)
+        main_output = self.fc_out(lstm_out)  # (batch, n_ahead, num_classes)
         
-        return main_output
+        # Auxiliary branch: Use the last n_ahead encoder outputs to predict the "trend" (or temporal difference)
+        aux_input = enc_out[:, -self.n_ahead:, :]  # (batch, n_ahead, d_model)
+        aux_output = self.auxiliary_fc(aux_input)    # (batch, n_ahead, num_classes)
+        
+        return main_output, aux_output

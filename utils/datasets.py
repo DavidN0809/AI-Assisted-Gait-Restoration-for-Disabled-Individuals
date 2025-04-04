@@ -150,7 +150,7 @@ class EMG_dataset(torch.utils.data.Dataset):
         # For weighting, we can base it on the average of the entire Y_array
         # or just the first step, etc. We'll do the entire Y.
         gt_avg = np.mean(Y_array)
-        bin_value = self.value_to_bin_index(gt_avg, step=0.01, min_val=-1, max_val=1)
+        bin_value = self.value_to_bin_index(gt_avg, step=0.01, min_val=0, max_val=1)
         weight = self.weights[bin_value]
 
         return (
@@ -164,9 +164,9 @@ class EMG_dataset(torch.utils.data.Dataset):
     def get_distribution(self):
         """
         Aggregates the distribution of all values across all samples.
-        Uses bins from -1 to 1 with a step of 0.01.
+        Uses bins from 0 to 1 with a step of 0.01.
         """
-        bins = np.arange(-1, 1.01, 0.01)
+        bins = np.arange(0, 1.01, 0.01)
         aggregated_counts = np.zeros(len(bins) - 1, dtype=int)
 
         for idx in tqdm(range(len(self)), desc="Computing Distribution"):
@@ -187,7 +187,7 @@ class EMG_dataset(torch.utils.data.Dataset):
         self.weights = weights
         self.bin_centers = bin_centers
 
-    def value_to_bin_index(self, x, step=0.01, min_val=-1, max_val=1):
+    def value_to_bin_index(self, x, step=0.01, min_val=0, max_val=1):
         # Clip x within range
         x = max(min_val, min(x, max_val))
         num_bins = int((max_val - min_val) / step)
