@@ -113,7 +113,7 @@ class TCNModel(nn.Module):
                                      stride=1, dilation=dilation_size, padding=padding,
                                      dropout=dropout)]
         self.network = nn.Sequential(*layers)
-        self.final_fc = nn.Linear(num_channels[-1], num_classes)
+        self.final_fc = nn.Linear(num_channels[-1], num_classes)  # num_classes should be passed as 9 when instantiating
         self.n_ahead = n_ahead
         
     def forward(self, x):
@@ -146,7 +146,7 @@ class RNNModel(nn.Module):
         self.rnn = nn.RNN(input_size, hidden_size, num_layers,
                           batch_first=True, bidirectional=bidirectional)
         direction_factor = 2 if bidirectional else 1
-        self.fc = nn.Linear(hidden_size * direction_factor, num_classes)
+        self.fc = nn.Linear(hidden_size * direction_factor, num_classes)  # Ensure num_classes equals 9
 
     def forward(self, x):
         # x: (batch, seq_len, input_size)

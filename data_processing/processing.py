@@ -1,356 +1,294 @@
+#!/usr/bin/env python3
+
 import os
-import re
-import random
-import numpy as np
+import glob
 import pandas as pd
-from glob import glob
+import numpy as np
+import random
+import re
+import scipy.signal
 import concurrent.futures
 from tqdm import tqdm
-import argparse
-import matplotlib.pyplot as plt
 
-# ---------------------------
-# Helper functions
-# ---------------------------
+def replace_outliers(series, threshold=3):
+    """Replace values that deviate more than threshold*std from the mean with the median."""
+    values = series.values.astype(np.float64)
+    mean = np.mean(values)
+    std = np.std(values)
+    median = np.median(values)
+    mask = np.abs(values - mean) > threshold * std
+    values[mask] = median
+    return pd.Series(values, index=series.index)
 
-# Parse frequency from a column name (e.g. "(1259.259 Hz)")
-FREQ_REGEX = re.compile(r'\(([\d\.]+)\s*Hz\)', re.IGNORECASE)
-def parse_frequency(col_name):
-    match = FREQ_REGEX.search(col_name)
+
+def parse_frequency_from_column(col_name):
+    """Parse frequency from a column name in the format '(1000 Hz)'."""
+    pattern = re.compile(r'\(([\d\.]+)\s*Hz\)', re.IGNORECASE)
+    match = pattern.search(col_name)
     if match:
-        return float(match.group(1))
+        try:
+            return float(match.group(1))
+        except:
+            return None
     return None
 
-# Outlier replacement: replace values more than threshold*std from the mean with the median.
-def replace_outliers(data, threshold=3):
-    median = np.median(data)
-    mean = np.mean(data)
-    std = np.std(data)
-    outliers = np.abs(data - mean) > threshold * std
-    data[outliers] = median
-    return data
 
-# ---------------------------
-# Processing CSV files with outlier replacement, resampling & RMS for EMG
-# ---------------------------
-def process_csv_file(input_csv, input_base_dir, output_base_dir):
+def normalize_action_name(action_name):
     """
-    1. Reads CSV and drops the first 200 rows.
-    2. Drops columns with 'Unnamed', 'IMP', or 'time'.
-    3. For each remaining column:
-         a. Replaces outliers,
-         b. Applies min–max normalization to scale values between -1 and 1,
-         c. Parses its frequency and downsamples using block averaging.
-         For EMG columns, rectifies (absolute value) then computes the RMS.
-    4. Splits the processed DataFrame into DS1 (all), DS2 (EMG-only), DS3 (ACC+EMG), DS4 (GYRO+EMG).
-    5. Saves each DS CSV into its respective folder, preserving the relative path.
+    Normalize action names by removing underscores, standardizing spaces, 
+    and converting to lowercase to ensure consistent action identification.
     """
-    df_raw = pd.read_csv(input_csv)
-    if len(df_raw) > 200:
-        df_raw = df_raw.iloc[200:]
-    else:
-        print(f"File {input_csv} has fewer than 200 rows; skipping.")
+    # Convert to lowercase
+    action = action_name.lower()
+    
+    # Replace underscores and multiple spaces with a single space
+    action = action.replace('_', ' ')
+    action = ' '.join(action.split())
+    
+    # Remove any trailing or leading spaces
+    action = action.strip()
+    
+    return action
+
+
+def preprocess_csv_file(input_csv, input_base_dir, output_base_dir, target_hz=10, outlier_threshold=3):
+    """
+    Reads a CSV of rectified EMG signals, replaces outliers, normalizes each column between 0 and 1,
+    parses the source frequency from each column name (default 1000 Hz if not found), drops time columns,
+    and resamples each column individually to a common length (minimum length computed from each column's
+    new length = int(len(column) * (target_hz / source_hz))).
+    Saves the processed file preserving the relative path.
+    """
+    try:
+        data = pd.read_csv(input_csv)
+    except Exception as e:
+        print(f"Error reading {input_csv}: {e}")
         return
 
-    drop_cols = [c for c in df_raw.columns if 'unnamed' in c.lower() 
-                 or 'imp' in c.lower() or 'time' in c.lower()]
-    df_raw = df_raw.drop(columns=drop_cols,errors='ignore')
-    resampled_series_list = []
-    for col in df_raw.columns:
-        freq = parse_frequency(col)
-        if freq is None:
-            print(f"Warning: Could not parse frequency in column '{col}' of '{input_csv}'. Skipping it.")
-            continue
+    # Drop time columns
+    cols_to_drop = [col for col in data.columns if 'time' in col.lower()]
+    data = data.drop(columns=cols_to_drop, errors='ignore')
 
-        series = df_raw[col].dropna()
-        data = series.values.astype(np.float64)
-        data = replace_outliers(data, threshold=3)
-        
-        # Apply min-max normalization before resampling
-        col_min = data.min()
-        col_max = data.max()
-        # if col_max != col_min:
-        #     data = 2 * (data - col_min) / (col_max - col_min) - 1
+    processed_cols = {}  
+    new_lengths = []
+
+    for col in data.columns:
+        # Process each column separately
+        series = data[col].dropna().astype(np.float64)
+        # Replace outliers
+        series = replace_outliers(series, threshold=outlier_threshold)
+        # Normalize 0-1
+        # col_min = series.min()
+        # col_max = series.max()
+        # if col_max - col_min != 0:
+        #     series = (series - col_min) / (col_max - col_min)
         # else:
-        #     data = np.zeros_like(data)
-        # Apply 0-1 scaling
-        if col_max != col_min:
-            data = (data - col_min) / (col_max - col_min)
-        else:
-            data = np.zeros_like(data)
+        #     series = pd.Series(np.zeros_like(series), index=series.index)
+        
+        # Parse frequency from column name
+        f_source = parse_frequency_from_column(col)
+        if f_source is None:
+            f_source = 1000  
+        n_rows = len(series)
+        new_length = int(n_rows * (target_hz / f_source))
+        if new_length < 1:
+            new_length = 1
+        new_lengths.append(new_length)
+        processed_cols[col] = series
 
-        block_size = int(round(freq / 10))
-        if block_size <= 0:
-            print(f"Invalid block size computed for column {col} in {input_csv}.")
-            continue
-        n_blocks = len(data) // block_size
-        if n_blocks == 0:
-            print(f"Not enough data in {input_csv} for column {col} after dropping rows.")
-            continue
-        
-        trimmed = data[:n_blocks * block_size]
-        blocks = trimmed.reshape(n_blocks, block_size)
-        
-        downsampled = blocks.mean(axis=1)
-        
-        s_down = pd.Series(downsampled, name=col)
-        resampled_series_list.append(s_down)
-    
-    if not resampled_series_list:
-        print(f"Warning: After processing columns, no valid data left for '{input_csv}'.")
+    if not new_lengths:
+        print(f"No columns to process in {input_csv} after dropping time columns.")
         return
     
-    # Concatenate all downsampled series without additional normalization
-    df_down = pd.concat(resampled_series_list, axis=1)
-        
-    # Split into DS1 (all), DS2 (EMG-only), DS3 (ACC+EMG), DS4 (GYRO+EMG)
-    ds1 = df_down.copy()
-    emg_cols = [c for c in df_down.columns if 'emg' in c.lower()]
-    ds2 = df_down[emg_cols].copy() if emg_cols else pd.DataFrame(index=df_down.index)
-    acc_cols = [c for c in df_down.columns if ('acc' in c.lower() or 'emg' in c.lower())]
-    ds3 = df_down[acc_cols].copy() if acc_cols else pd.DataFrame(index=df_down.index)
-    gyro_cols = [c for c in df_down.columns if ('gyro' in c.lower() or 'emg' in c.lower())]
-    ds4 = df_down[gyro_cols].copy() if gyro_cols else pd.DataFrame(index=df_down.index)
-    
-    rel_path = os.path.relpath(os.path.dirname(input_csv), start=input_base_dir)
-    base_name = os.path.basename(input_csv)
-    
-    ds1_outdir = os.path.join(output_base_dir, "DS1", rel_path)
-    ds2_outdir = os.path.join(output_base_dir, "DS2", rel_path)
-    ds3_outdir = os.path.join(output_base_dir, "DS3", rel_path)
-    ds4_outdir = os.path.join(output_base_dir, "DS4", rel_path)
-    
-    os.makedirs(ds1_outdir, exist_ok=True)
-    os.makedirs(ds2_outdir, exist_ok=True)
-    os.makedirs(ds3_outdir, exist_ok=True)
-    os.makedirs(ds4_outdir, exist_ok=True)
-    
-    ds1.to_csv(os.path.join(ds1_outdir, base_name))
-    ds2.to_csv(os.path.join(ds2_outdir, base_name))
-    ds3.to_csv(os.path.join(ds3_outdir, base_name))
-    ds4.to_csv(os.path.join(ds4_outdir, base_name))
-    
-    print(f"Processed {input_csv} -> DS1, DS2, DS3, DS4 saved. Length of DS1 csv: {len(ds1)}")
+    common_length = min(new_lengths)
+    resampled_data = {}
+    for col, series in processed_cols.items():
+        resampled_array = scipy.signal.resample(series.to_numpy(), common_length)
+        resampled_data[col] = resampled_array
 
-def process_all_csvs_parallel(input_base_dir, output_base_dir):
-    """
-    Recursively finds CSV files under input_base_dir (skipping 'camera_' subdirs)
-    and processes them in parallel.
-    """
-    tasks = []
-    print("Started finding all CSV files")
-    for root, dirs, files in os.walk(input_base_dir):
-        dirs[:] = [d for d in dirs if not d.lower().startswith("camera_")]
-        for file in files:
-            if file.lower().endswith('.csv'):
-                input_csv = os.path.join(root, file)
-                tasks.append(input_csv)
-    
-    print(f"Found {len(tasks)} CSV file(s) to process in '{input_base_dir}'.")
-    
-    with concurrent.futures.ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-        futures = [executor.submit(process_csv_file, csv, input_base_dir, output_base_dir) 
-                   for csv in tasks]
-        for _ in tqdm(concurrent.futures.as_completed(futures),
-                      total=len(futures),
-                      desc="Processing CSV Files"):
-            pass
+    df_resampled = pd.DataFrame(resampled_data)
 
-
-# ---------------------------
-# Index building for train/val/test splits
-# ---------------------------
-
-def build_index_for_all_datasets(output_base_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], seed=42, train_ratio=0.7, val_ratio=0.15):
-    ds1_files = glob(os.path.join(output_base_dir, "DS1", "**", "*.csv"), recursive=True)
-    base_index = []
-    for file in ds1_files:
-        rel_path = os.path.relpath(file, start=output_base_dir)
-        parts = rel_path.split(os.sep)
-        try:
-            uuid = parts[1]
-        except IndexError:
-            uuid = "unknown"
-        base_index.append({'uuid': uuid})
-    base_df = pd.DataFrame(base_index).drop_duplicates(subset="uuid")
-    uuids = base_df['uuid'].tolist()
-    
-    random.seed(seed)
-    random.shuffle(uuids)
-    n = len(uuids)
-    n_train = int(n * train_ratio)
-    n_val = int(n * val_ratio)
-    train_uuids = set(uuids[:n_train])
-    val_uuids = set(uuids[n_train:n_train+n_val])
-    test_uuids = set(uuids[n_train+n_val:])
-    
-    indexes = {}
-    for ds in ds_list:
-        ds_files = glob(os.path.join(output_base_dir, ds, "**", "*.csv"), recursive=True)
-        index_list = []
-        for file in ds_files:
-            rel_path = os.path.relpath(file, start=output_base_dir)
-            parts = rel_path.split(os.sep)
-            try:
-                uuid = parts[1]
-                action = parts[2]
-            except IndexError:
-                uuid = "unknown"
-                action = "unknown"
-            index_list.append({
-                'file_path': f"./{rel_path}",
-                'uuid': uuid,
-                'action': action
-            })
-        df_index = pd.DataFrame(index_list)
-        def get_split(uuid):
-            if uuid in train_uuids:
-                return 'train'
-            elif uuid in val_uuids:
-                return 'val'
-            elif uuid in test_uuids:
-                return 'test'
-            else:
-                return 'unknown'
-        df_index['split'] = df_index['uuid'].apply(get_split)
-        indexes[ds] = df_index
-    return indexes
-
-def save_index(index_df, output_csv):
+    rel_path = os.path.relpath(input_csv, start=input_base_dir)
+    output_csv = os.path.join(output_base_dir, rel_path)
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)
-    index_df.to_csv(output_csv, index=False)
-    print(f"Index saved to: {output_csv}")
+    df_resampled.to_csv(output_csv, index=False)
+    print(f"Saved processed file to {output_csv}. Common length: {common_length}.")
 
-def build_train_val_test_indexes(output_base_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], seed=42, train_ratio=0.7, val_ratio=0.10):
-    indexes = build_index_for_all_datasets(output_base_dir, ds_list=ds_list, seed=seed, train_ratio=train_ratio, val_ratio=val_ratio)
-    for ds, df_index in indexes.items():
-        ds_index_path = os.path.join(output_base_dir, ds)
-        os.makedirs(ds_index_path, exist_ok=True)
-        for split in ['train', 'val', 'test']:
-            split_df = df_index[df_index['split'] == split].drop(columns=['split'])
-            save_index(split_df, os.path.join(ds_index_path, f"{split}.csv"))
-    for ds in ds_list:
-        ds_files = glob(os.path.join(output_base_dir, ds, "**", "*.csv"), recursive=True)
-        print(f"Total CSV files in {ds}: {len(ds_files)}")
 
-# ---------------------------
-# Plotting sliding window example as PNG with subplots
-# ---------------------------
-
-def extract_one_window(input_csv, lag=30, nahead=10):
+def process_all_csvs(input_base_dir, output_base_dir, target_hz=10, outlier_threshold=3, num_workers=4):
     """
-    Reads a processed CSV file and extracts a single sliding window (first window)
-    as a DataFrame (without flattening).
+    Finds all CSV files under input_base_dir, preprocesses them, and saves to output_base_dir.
+    Uses parallel processing with specified number of workers.
     """
-    df = pd.read_csv(input_csv, index_col=0)
-    total_length = lag + nahead
-    if len(df) >= total_length:
-        return df.iloc[:total_length]
-    else:
-        return None
-
-def plot_sliding_windows(output_base_dir, figures_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], lag=30, nahead=10):
-    """
-    For each dataset in ds_list, finds one CSV file,
-    extracts a sliding window (non-flattened),
-    and plots signals grouped by sensor number:
-      - Group 1: Sensors 0-2
-      - Group 2: Sensors 3-5
-    One PNG is saved per dataset.
-    """
-    import re
-    # Regex to extract sensor number from standardized column names (e.g., "sensor_0_emg")
-    sensor_pattern = re.compile(r'sensor_(\d+)', re.IGNORECASE)
+    csv_files = glob.glob(os.path.join(input_base_dir, "**", "*.csv"), recursive=True)
+    print(f"Found {len(csv_files)} CSV files in {input_base_dir}")
     
-    for ds in ds_list:
-        ds_path = os.path.join(output_base_dir, ds)
-        csv_files = sorted(glob(os.path.join(ds_path, "**", "*.csv"), recursive=True))
-        if not csv_files:
-            print(f"No CSV files found for dataset {ds}")
-            continue
-
-        window = extract_one_window(csv_files[0], lag, nahead)
-        if window is None:
-            print(f"Not enough data in {csv_files[0]} to extract a window for {ds}.")
-            continue
-
-        # Group columns based on sensor number:
-        # Group 1: sensors 0-2, Group 2: sensors 3-5
-        group_0_2 = []
-        group_3_5 = []
-        for col in window.columns:
-            m = sensor_pattern.search(col.lower())
-            if m:
-                sensor_num = int(m.group(1))
-                if sensor_num <= 2:
-                    group_0_2.append(col)
-                elif sensor_num <= 5:
-                    group_3_5.append(col)
-            # Columns without a matching sensor pattern are ignored
-
-        groups = []
-        if group_0_2:
-            groups.append(("Sensors 0-2", group_0_2))
-        if group_3_5:
-            groups.append(("Sensors 3-5", group_3_5))
-        if not groups:
-            print(f"No sensor data found in {csv_files[0]} for dataset {ds}.")
-            continue
-
-        n_groups = len(groups)
-        fig, axes = plt.subplots(n_groups, 1, figsize=(10, 4 * n_groups))
-        # Ensure axes is a list when only one subplot exists
-        if n_groups == 1:
-            axes = [axes]
-
-        for ax, (title, cols) in zip(axes, groups):
-            for col in cols:
-                ax.plot(window.index, window[col], marker='o', linestyle='-', markersize=4, label=col)
-            ax.set_title(title)
-            ax.set_xlabel("Time Step")
-            ax.set_ylabel("Value")
-            ax.legend()
+    # Create output directories if they don't exist
+    os.makedirs(output_base_dir, exist_ok=True)
+    
+    # Process files in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+        # Create a list of future tasks
+        futures = [
+            executor.submit(
+                preprocess_csv_file, 
+                csv_file, 
+                input_base_dir, 
+                output_base_dir, 
+                target_hz, 
+                outlier_threshold
+            ) 
+            for csv_file in csv_files
+        ]
         
-        plt.tight_layout()
-        output_png = os.path.join(figures_dir, "datasets", ds, f"{ds}_window_signals.png")
-        os.makedirs(os.path.dirname(output_png), exist_ok=True)
-        plt.savefig(output_png)
-        print(f"Sliding window signals plot for {ds} saved to {output_png}")
-        plt.close()
+        # Process futures as they complete with a progress bar
+        for _ in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Processing CSV files"):
+            pass
+            
+    print("Preprocessing complete.")
 
 
-# ---------------------------
-# Main processing routines
-# ---------------------------
-
-def full_processing():
-    input_base_dir = "/data1/dnicho26/EMG_DATASET/data/processed"
-    output_base_dir = "/data1/dnicho26/EMG_DATASET/final-data"
+def build_train_test_val_index(output_base_dir, train_ratio=0.6, val_ratio=0.2, seed=42):
+    """
+    Creates train/test/validation indexes for all processed CSV files in output_base_dir
+    and saves them as separate CSV files.
     
-    print("Starting CSV processing...")
-    process_all_csvs_parallel(input_base_dir, output_base_dir)
+    Args:
+        output_base_dir (str): Base directory containing processed CSV files
+        train_ratio (float): Ratio of files for training set (default 0.6)
+        val_ratio (float): Ratio of files for validation set (default 0.2)
+        seed (int): Random seed (not used when UUIDs are sorted)
+    """
+    all_files = glob.glob(os.path.join(output_base_dir, "**", "*.csv"), recursive=True)
+    all_files = [os.path.relpath(f, start=output_base_dir) for f in all_files]
     
-    print("Building train/val/test indexes...")
-    build_train_val_test_indexes(output_base_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], seed=42)
+    if not all_files:
+        print(f"No CSV files found in {output_base_dir}")
+        return
     
-def index_only():
-    output_base_dir = "/data1/dnicho26/EMG_DATASET/final-data"
-    print("Building train/val/test indexes only...")
-    build_train_val_test_indexes(output_base_dir, ds_list=["DS1", "DS2", "DS3", "DS4"], seed=42)
-    figures_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/figures"
+    # Group files by UUID - extract UUID from the file path
+    uuid_files = {}
+    
+    for file_path in all_files:
+        # Split path into components
+        path_parts = file_path.split(os.sep)
+        
+        # The UUID should be the first part of the path (e.g., '2' in '2/treadmill/...')
+        uuid = path_parts[0]
+        
+        # The action is the second part of the path (e.g., 'treadmill' in '2/treadmill/...')
+        action = path_parts[1] if len(path_parts) > 1 else ""
+        
+        # Normalize the action name
+        action = normalize_action_name(action)
+        
+        # Add the action as additional data to the file info
+        file_info = {"file_path": file_path, "action": action}
+        
+        if uuid not in uuid_files:
+            uuid_files[uuid] = []
+        uuid_files[uuid].append(file_info)
+    
+    # Print sample UUIDs for verification
+    print(f"Sample UUIDs and actions: {list(uuid_files.items())[:3]}")
+    
+    # Get unique UUIDs and sort them (no shuffling)
+    uuids = sorted(uuid_files.keys())
+    
+    # Calculate split sizes
+    n_total = len(uuids)
+    n_train = max(1, int(n_total * train_ratio))
+    n_val = max(1, int(n_total * val_ratio))
+    
+    # Ensure we don't exceed total with rounding
+    if n_train + n_val > n_total:
+        n_val = max(1, n_total - n_train - 1)  # Ensure at least 1 for test
+    
+    n_test = n_total - n_train - n_val
+    
+    # Sequential split: first n_train UUIDs go to train, next n_test to test, last n_val to validation
+    train_uuids = uuids[:n_train]
+    test_uuids = uuids[n_train:n_train + n_test]
+    val_uuids = uuids[n_train + n_test:]
+    
+    # Print information about the splits
+    print(f"Split {n_total} UUIDs: {n_train} train, {n_test} test, {n_val} validation")
+    
+    # Create dataframes
+    train_files_info = []
+    val_files_info = []
+    test_files_info = []
+    
+    # Assign files to splits based on UUID
+    for uuid, files_info in uuid_files.items():
+        if uuid in train_uuids:
+            train_files_info.extend(files_info)
+        elif uuid in test_uuids:
+            test_files_info.extend(files_info)
+        else:
+            val_files_info.extend(files_info)
+    
+    # Create dataframes
+    train_index = pd.DataFrame(train_files_info)
+    val_index = pd.DataFrame(val_files_info)
+    test_index = pd.DataFrame(test_files_info)
+    
+    # Ensure output directories exist
+    os.makedirs(output_base_dir, exist_ok=True)
+    
+    # Save indexes to the output directory itself, not its parent
+    train_index.to_csv(os.path.join(output_base_dir, "train_index.csv"), index=False)
+    val_index.to_csv(os.path.join(output_base_dir, "val_index.csv"), index=False)
+    test_index.to_csv(os.path.join(output_base_dir, "test_index.csv"), index=False)
+    
+    print(f"Saved train index to {os.path.join(output_base_dir, 'train_index.csv')} ({len(train_files_info)} files)")
+    print(f"Saved validation index to {os.path.join(output_base_dir, 'val_index.csv')} ({len(val_files_info)} files)")
+    print(f"Saved test index to {os.path.join(output_base_dir, 'test_index.csv')} ({len(test_files_info)} files)")
 
-    for ds in ["DS1", "DS2", "DS3", "DS4"]:
-        ds_files = glob(os.path.join(output_base_dir, ds, "**", "*.csv"), recursive=True)
-        print(f"Total CSV files in {ds}: {len(ds_files)}")
+
+def process_data(input_dir, output_dir, target_hz=10, outlier_threshold=3, train_ratio=0.6, val_ratio=0.2, seed=42, 
+                index_only=False, num_workers=4):
+    """
+    Process rectified EMG CSV files using RMS resampling based on parsed frequency,
+    with outlier replacement, and create train/test/validation splits based on UUID.
+    
+    Args:
+        input_dir (str): Input directory containing raw CSV files
+        output_dir (str): Output directory to save processed CSV files
+        target_hz (float): Target sampling frequency after resampling (Hz)
+        outlier_threshold (float): Threshold for outlier replacement (in standard deviations)
+        train_ratio (float): Ratio of files for training set (default 0.6)
+        val_ratio (float): Ratio of files for validation set (default 0.2)
+        seed (int): Random seed for splitting
+        index_only (bool): If True, only build the index files without processing CSVs
+        num_workers (int): Number of worker threads for parallel processing
+    """
+    if not index_only:
+        process_all_csvs(input_dir, output_dir, target_hz, outlier_threshold, num_workers)
+    
+    build_train_test_val_index(output_dir, train_ratio, val_ratio, seed)
 
 
 if __name__ == "__main__":
-    # Uncomment argparse handling if running from command line
-    # parser = argparse.ArgumentParser(description="Process CSVs and/or build indexes for DS folders.")
-    # parser.add_argument("--index-only", action="store_true", help="Build index only, skipping CSV processing.")
-    # args = parser.parse_args()
-    index_only_mode = False
-    if index_only_mode:
-        index_only()
-    else:
-        full_processing()
+    # Configuration variables
+    input_dir = "/data1/dnicho26/EMG_DATASET/data/processed"
+    output_dir = "/data1/dnicho26/EMG_DATASET/final-data-not-norm/"
+    target_hz = 10
+    outlier_threshold = 3
+    train_ratio = 0.6  # Updated to 60%
+    val_ratio = 0.2    # Updated to 20%
+    seed = 42
+    index_only = False
+    num_workers = 4
+
+    process_data(
+        input_dir, 
+        output_dir, 
+        target_hz, 
+        outlier_threshold, 
+        train_ratio, 
+        val_ratio, 
+        seed,
+        index_only,
+        num_workers
+    )
