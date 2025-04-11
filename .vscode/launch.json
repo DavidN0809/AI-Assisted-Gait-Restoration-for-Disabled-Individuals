@@ -2,40 +2,20 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Preprocess",
+            "name": "Run Training Script",
             "type": "debugpy",
             "request": "launch",
-            "program": "./data_processing/preprocessing.py",
+            "program": "${workspaceFolder}/training/training.py",
             "console": "integratedTerminal",
-            "justMyCode": false
+            "args": []
         },
         {
-            "name": "Check Data",
+            "name": "Run Preprocessing Script",
             "type": "debugpy",
             "request": "launch",
-            "program": "./data_processing/script_check_camera_folders.py",
+            "program": "${workspaceFolder}/data_processing/processing.py",
             "console": "integratedTerminal",
-            "justMyCode": false
-        },
-        {
-            "name": "Skeleton",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "./data_processing/skeleton.py",
-            "console": "integratedTerminal",
-            "justMyCode": false
-        },
-        {
-            "name": "LSTM",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "training.lstm",
-            "cwd": "${workspaceFolder}",
-            "env": {
-                "PYTHONPATH": "${workspaceFolder}"
-            },
-            "console": "integratedTerminal",
-            "justMyCode": false
+            "args": []
         }
     ]
 }

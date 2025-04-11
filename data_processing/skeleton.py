@@ -10,7 +10,9 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(me
 logger = logging.getLogger(__name__)
 
 def find_npy_files(base_path):
-    """Recursively finds npy files in the directory structure."""
+    """
+    Recursively finds all .npy files in the given directory.
+    """
     npy_files = []
     for root, _, files in os.walk(base_path):
         for file in files:
@@ -18,61 +20,108 @@ def find_npy_files(base_path):
                 npy_files.append(os.path.join(root, file))
     return npy_files
 
-# Adjust this to the parent directory that contains all the UUID directories.
-base_dir = "D:\UNC Charlotte Dropbox\orgs-ecgr-QuantitativeImagingandAILaboratory"
-
-# Find all npy files.
-npy_files = find_npy_files(base_dir)
-logger.info(f"Found {len(npy_files)} npy files.")
-
-records = []
-for file_path in tqdm(npy_files, desc="Processing npy files"):
-    # Compute the relative path to extract UUID, action, and camera folder.
-    relative_path = os.path.relpath(file_path, base_dir)
-    path_parts = relative_path.split(os.sep)
+def load_npy_files(base_dir):
+    """
+    Load npy files for machine learning training from a given base directory.
     
-    # We expect at least three levels: UUID/action/camera_x/<file>
-    if len(path_parts) < 3:
-        logger.warning(f"File {file_path} does not match expected structure UUID/action/camera_x")
-        continue
-
-    uuid = path_parts[0]
-    action = path_parts[1]
-    camera_folder = path_parts[2]  # e.g., "camera_0", "camera_1", etc.
+    This function handles:
+      - Raw npy files (just an image array)
+      - npy files with metadata (a dict or tuple/list containing image data, timestamp, and camera_index)
+      
+    If a loaded file contains a camera_index, the code checks that the file's folder name 
+    (e.g., "camera_0", "camera_1", etc.) matches the embedded camera_index. If not, it updates the folder.
     
-    # Optionally extract camera index from folder name (using regex) if needed.
-    camera_match = re.search(r"camera_(\d+)", camera_folder, re.IGNORECASE)
-    camera_index = int(camera_match.group(1)) if camera_match else None
-
-    try:
-        loaded = np.load(file_path, allow_pickle=True)
-    except Exception as e:
-        logger.error(f"Error loading file {file_path}: {e}")
-        continue
+    Returns:
+        A pandas DataFrame containing:
+          - uuid: the UUID folder from the file path
+          - action: the action folder from the file path
+          - camera_folder: folder name (verified or updated)
+          - camera_index: camera index (if available)
+          - file_path: full path to the file
+          - timestamp: timestamp from the file (if available)
+          - data: the loaded image data (array)
+    """
+    npy_files = find_npy_files(base_dir)
+    logger.info(f"Found {len(npy_files)} npy files.")
     
-    # Determine file content format.
-    if isinstance(loaded, dict):
-        data = loaded.get("data")
-        timestamp = loaded.get("timestamp")
-        camera = loaded.get("camera")
-    elif isinstance(loaded, (tuple, list)) and len(loaded) >= 3:
-        data, timestamp, camera = loaded[0], loaded[1], loaded[2]
-    else:
-        logger.warning(f"Unexpected data format in {file_path}")
-        continue
-    
-    record = {
-        "uuid": uuid,
-        "action": action,
-        "camera_folder": camera_folder,
-        "camera_index": camera_index,
-        "file_path": file_path,
-        "timestamp": timestamp,
-        "data": data,
-        "camera": camera
-    }
-    records.append(record)
+    records = []
+    for file_path in tqdm(npy_files, desc="Processing npy files"):
+        # Compute the relative path to extract UUID, action, and camera folder.
+        relative_path = os.path.relpath(file_path, base_dir)
+        path_parts = relative_path.split(os.sep)
 
-# Create a DataFrame from all collected records.
-df = pd.DataFrame(records)
-print(df.head())
+        # We expect at least three levels: UUID/action/camera_x/<file>
+        if len(path_parts) < 3:
+            logger.warning(f"File {file_path} does not match expected structure UUID/action/camera_x")
+            continue
+
+        uuid = path_parts[0]
+        action = path_parts[1]
+        camera_folder = path_parts[2]  # e.g., "camera_0", "camera_1", etc.
+
+        # Extract timestamp from filename (remove .npy extension)
+        filename = os.path.basename(file_path)
+        timestamp_match = re.search(r"(\d+)\.npy$", filename)
+        timestamp = int(timestamp_match.group(1)) if timestamp_match else None
+
+        # Extract camera index from folder name (if present)
+        camera_match = re.search(r"camera_(\d+)", camera_folder, re.IGNORECASE)
+        folder_camera_index = int(camera_match.group(1)) if camera_match else None
+
+        try:
+            loaded = np.load(file_path, allow_pickle=True)
+        except Exception as e:
+            logger.error(f"Error loading file {file_path}: {e}")
+            continue
+
+        # Initialize variables.
+        camera_index = None
+        data = None
+
+        # Check the type and structure of the loaded data.
+        if isinstance(loaded, dict):
+            data = loaded.get("img_data", loaded.get("data"))
+            camera_index = loaded.get("camera_index", None)
+        elif isinstance(loaded, (tuple, list)) and len(loaded) >= 3:
+            data, _, camera_index = loaded[:3]
+        elif isinstance(loaded, np.ndarray):
+            data = loaded
+        else:
+            logger.warning(f"Unexpected data format in {file_path}")
+            continue
+
+        # If metadata contains a camera index, verify folder consistency
+        if camera_index is not None:
+            expected_folder = f"camera_{camera_index}"
+            if expected_folder != camera_folder:
+                logger.info(f"File {file_path} expected in {expected_folder} but found in {camera_folder}. Updating folder.")
+                camera_folder = expected_folder
+
+        record = {
+            "uuid": uuid,
+            "action": action,
+            "camera_folder": camera_folder,
+            "camera_index": camera_index,
+            "file_path": file_path,
+            "timestamp": timestamp,  # Fixed: extracted from filename
+            "data": data
+        }
+        records.append(record)
+
+    
+    # Create a DataFrame from all collected records.
+    df = pd.DataFrame(records)
+    return df
+
+if __name__ == "__main__":
+    # Adjust this to the parent directory that contains all the UUID directories.
+    base_dir = r"/data1/dnicho26/EMG_DATASET/data"
+    
+    # Load the npy files into a DataFrame.
+    df = load_npy_files(base_dir)
+    print(df.head())
+
+    # Optionally, save the DataFrame to a CSV file for further processing.
+    output_csv = os.path.join(base_dir, "npy_files_data.csv")
+    df.to_csv(output_csv, index=False)
+    logger.info(f"DataFrame saved to {output_csv}")
