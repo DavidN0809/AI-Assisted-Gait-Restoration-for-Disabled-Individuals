@@ -1,7 +1,7 @@
 # AI-Assisted-Gait-Restoration-for-Disabled-Individuals
 ```
 conda activate EMG
-screen -dmS lstm_training bash -c "python -m training.lstm.py > output.txt 2>&1"
+screen -dmS training-acc bash -c "source activate EMG; python training-acc.py"
 ```
 
 # Sync data from dropbox

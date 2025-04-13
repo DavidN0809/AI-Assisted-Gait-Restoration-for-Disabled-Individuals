@@ -15,6 +15,7 @@ def segment_windows(df, window_size, overlap_fraction):
         segment = df.iloc[start:start + window_size].reset_index(drop=True)
         segments.append(segment)
     return segments
+
 def plot_windows(windows, num_windows=5, output_dir="final-data/figures/windows"):
     """
     Plots the first `num_windows` windows.
@@ -134,20 +135,25 @@ def plot_histograms(csv_files, output_dir="final-data/figures/histograms"):
             print(f"Saved {axis.upper()} histogram to {filepath}")
 
 def main():
-    base_dir = "/data1/dnicho26/EMG_DATASET/final-data/"
-    figures_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/figures/dataset"
+    base_dir = "/data1/dnicho26/EMG_DATASET/data/data"
+    figures_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/figures/raw-data"
     windows_outdir = os.path.join(figures_dir, "windows")
     histograms_outdir = os.path.join(figures_dir, "histograms")
 
-    csv_files = glob(os.path.join(base_dir, "**", "*.csv"), recursive=True)
-    if not csv_files:
-        print("No CSV files found in processed dataset directory.")
-        return
+    csv_files = []
+    for num_dir in range(1, 20):
+        # Get all directories in the numbered directory
+        all_dirs = glob(os.path.join(base_dir, str(num_dir), "*"))
+        # Filter out camera directories
+        action_dirs = [d for d in all_dirs if not d.endswith("camera_0") and not d.endswith("camera_2") and not d.endswith("camera_3")]
+        for action_dir in action_dirs:
+            csv_files.extend(glob(os.path.join(action_dir, "*.csv")))
 
     # Load first sample CSV for window plotting
     sample_df = pd.read_csv(csv_files[0])
-    window_size = 30  # 3 seconds @ 10 Hz
-    overlap_fraction = 0.5
+    # window_size = 1259*3  # 3 seconds @ 10 Hz or for raw data do 1259*3, 3 second sample of emg
+    window_size = 30
+    overlap_fraction = 0.0
     windows = segment_windows(sample_df, window_size, overlap_fraction)
 
     if windows:

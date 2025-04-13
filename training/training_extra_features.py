@@ -10,6 +10,8 @@ import numpy as np
 import torch.optim as optim
 from datetime import datetime
 import concurrent.futures  # For threading
+import time
+from tqdm import tqdm
 
 # Append parent directory to locate modules (assumes a project folder structure)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -184,6 +186,15 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
     
     return trainer.Metrics
 
+def train_model(model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor):
+    """Wrapper function to run training with proper error handling."""
+    try:
+        print(f"\nStarting training for: {model_name} (sensor: {sensor_mode}, n_ahead: {n_val}, loss: {loss_func})")
+        return run_training(model_cls, model_name, loss_func, sensor_mode, n_val, target_sensor)
+    except Exception as e:
+        print(f"Error training {model_name}: {str(e)}")
+        return None
+
 # ----------------------------------------------------------------------------------
 # DEVICE / PATH CONFIGURATION & HYPERPARAMETERS
 # ----------------------------------------------------------------------------------
@@ -243,19 +254,57 @@ if __name__ == "__main__":
     print(f"Starting training on device: {device}")
     
     # List of sensor modes to run experiments.
-    sensor_modes = ["all","emg", "acc", "gyro"]
-    # Define a list of prediction horizons (n_ahead values) to experiment with.
-    n_ahead_values = [1,5,10,15,20]  
-    
+    sensor_modes = ["all" , "emg", "gyro", "acc"]    # Define a list of prediction horizons (n_ahead values) to experiment with.
+    n_ahead_values = [10,15,20,25,30]      
     # Choose a loss function and model variant for demonstration.
     loss_func = "mse"  # Can be "huber", "mse", "smoothl1", or "custom"
 
-    # Loop over sensor modes, prediction horizons, loss functions, and model variants.
+    # Create a list of all combinations of experiments
+    experiments = []
     for sensor_mode in sensor_modes:
         for n_val in n_ahead_values:
             for loss_func in LOSS_TYPES:
                 for model_name, model_cls in model_variants.items():
-                    print(f"\nRunning experiment for sensor_mode: {sensor_mode}, n_ahead: {n_val}, loss: {loss_func}, model: {model_name}")
-                    run_training(model_cls, model_name, loss_func, sensor_mode, n_val, target_sensor)
+                    experiments.append((model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor))
+
+    # Use ThreadPoolExecutor with max_workers=4 to train 4 models at once
+    max_workers = 4
+    print(f"\nStarting parallel training with {max_workers} concurrent models...")
     
-    print("All training runs completed!")
+    # Split experiments into chunks to process in parallel
+    chunk_size = max_workers
+    total_experiments = len(experiments)
+    print(f"Total experiments: {total_experiments}")
+    print(f"Number of chunks: {(total_experiments + chunk_size - 1)//chunk_size}")
+    
+    for i in range(0, total_experiments, chunk_size):
+        chunk = experiments[i:i + chunk_size]
+        print(f"\nProcessing chunk {i//chunk_size + 1}/{(total_experiments + chunk_size - 1)//chunk_size}")
+        print(f"Models in this chunk: {[name for name, _, _, _, _, _ in chunk]}")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Create a list of futures
+            futures = []
+            for model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor in chunk:
+                future = executor.submit(
+                    train_model,
+                    model_name,
+                    model_cls,
+                    loss_func,
+                    sensor_mode,
+                    n_val,
+                    target_sensor
+                )
+                futures.append(future)
+            
+            # Wait for all futures to complete with progress bar
+            completed = 0
+            for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
+                try:
+                    result = future.result()
+                    completed += 1
+                    print(f"Completed {completed}/{len(futures)} models in this chunk")
+                except Exception as e:
+                    print(f"Error in parallel execution: {str(e)}")
+
+    print("\nAll training runs completed!")

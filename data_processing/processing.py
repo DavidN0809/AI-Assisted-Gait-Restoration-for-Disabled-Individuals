@@ -54,38 +54,31 @@ def normalize_action_name(action_name):
 def preprocess_csv_file(input_csv, input_base_dir, output_base_dir, target_hz=10, outlier_threshold=3):
     """
     Reads a CSV of rectified EMG signals, replaces outliers, normalizes each column between 0 and 1,
-    parses the source frequency from each column name (default 1000 Hz if not found), drops time columns,
+    parses the source frequency from each column name (default 1000 Hz if not found), keeps time columns,
     and resamples each column individually to a common length (minimum length computed from each column's
     new length = int(len(column) * (target_hz / source_hz))).
     Saves the processed file preserving the relative path.
     """
-    try:
-        data = pd.read_csv(input_csv)
-    except Exception as e:
-        print(f"Error reading {input_csv}: {e}")
-        return
 
-    # Drop time columns
-    cols_to_drop = [col for col in data.columns if 'time' in col.lower()]
-    data = data.drop(columns=cols_to_drop, errors='ignore')
+    data = pd.read_csv(input_csv)
 
+
+    # Identify time columns but keep them
+    time_columns = [col for col in data.columns if 'time' in col.lower()]
+    non_time_columns = [col for col in data.columns if 'time' not in col.lower()]
+    
     processed_cols = {}  
     new_lengths = []
-
-    for col in data.columns:
+    
+    # Process non-time columns
+    for col in non_time_columns:
         # Process each column separately
         series = data[col].dropna().astype(np.float64)
-        # Replace outliers
-        series = replace_outliers(series, threshold=outlier_threshold)
-        # Normalize 0-1
-        # col_min = series.min()
-        # col_max = series.max()
-        # if col_max - col_min != 0:
-        #     series = (series - col_min) / (col_max - col_min)
-        # else:
-        #     series = pd.Series(np.zeros_like(series), index=series.index)
         
-        # Parse frequency from column name
+        # 1. Replace outliers
+        series = replace_outliers(series, threshold=outlier_threshold)
+        
+        # 2. Calculate resampling parameters
         f_source = parse_frequency_from_column(col)
         if f_source is None:
             f_source = 1000  
@@ -97,21 +90,52 @@ def preprocess_csv_file(input_csv, input_base_dir, output_base_dir, target_hz=10
         processed_cols[col] = series
 
     if not new_lengths:
-        print(f"No columns to process in {input_csv} after dropping time columns.")
+        print(f"No columns to process in {input_csv} after identifying time columns.")
         return
     
+    # Find common length for resampling
     common_length = min(new_lengths)
+    
+    # 2. Resample all non-time columns to the common length
     resampled_data = {}
     for col, series in processed_cols.items():
         resampled_array = scipy.signal.resample(series.to_numpy(), common_length)
         resampled_data[col] = resampled_array
+    
+    # Also resample time columns if they exist
+    for col in time_columns:
+        series = data[col].dropna().astype(np.float64)
+        # Resample time column to the same length as other columns
+        resampled_array = scipy.signal.resample(series.to_numpy(), common_length)
+        resampled_data[col] = resampled_array
 
+    # Create DataFrame from resampled data
     df_resampled = pd.DataFrame(resampled_data)
 
+    # Drop the first 200 samples if there are enough samples
+    if len(df_resampled) > 200:
+        df_resampled = df_resampled.iloc[200:]
+    else:
+        print(f"File too short to drop samples: {len(df_resampled)} samples")
+
+    # # # 3. Normalize each column after resampling
+    # normalized_data = {}
+    # for col in df_resampled.columns:
+    #     series = df_resampled[col]
+    #     col_min = series.min()
+    #     col_max = series.max()
+    #     if col_max - col_min != 0:
+    #         normalized_data[col] = (series - col_min) / (col_max - col_min)
+    #     else:
+    #         normalized_data[col] = pd.Series(np.zeros_like(series), index=series.index)
+    
+    # Create final DataFrame with normalized data
+    df_normalized = pd.DataFrame(normalized_data)
+    # Save the processed file
     rel_path = os.path.relpath(input_csv, start=input_base_dir)
     output_csv = os.path.join(output_base_dir, rel_path)
     os.makedirs(os.path.dirname(output_csv), exist_ok=True)
-    df_resampled.to_csv(output_csv, index=False)
+    df_normalized.to_csv(output_csv, index=False)
     print(f"Saved processed file to {output_csv}. Common length: {common_length}.")
 
 

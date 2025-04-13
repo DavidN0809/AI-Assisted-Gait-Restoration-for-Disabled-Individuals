@@ -2,10 +2,34 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Run Training Script",
+            "name": "Run Training Script (EMG Prediction)",
             "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/training/training.py",
+            "console": "integratedTerminal",
+            "args": []
+        },
+        {
+            "name": "Run Accelerometer Training Script",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/training/training-acc.py",
+            "console": "integratedTerminal",
+            "args": []
+        },
+        {
+            "name": "Run Non-Normalized Training Script",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/training/training-non-normalized.py",
+            "console": "integratedTerminal",
+            "args": []
+        },
+        {
+            "name": "Run Extra Features Training Script",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/training/training-extra-features.py",
             "console": "integratedTerminal",
             "args": []
         },
