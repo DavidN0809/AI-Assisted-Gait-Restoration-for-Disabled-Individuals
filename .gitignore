@@ -6,5 +6,13 @@ datasets/
 checkpoints/
 logs/
 runs/
-trials/
-*trials/
+
+# Ignore directories containing 'trail' or 'trials' in their name
+*trail*/
+trail*/
+*trials*/
+trials*/
+
+# Ignore specific directories
+trials-acc/
+trials-not-norm/

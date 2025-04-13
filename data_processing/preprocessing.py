@@ -9,7 +9,7 @@ import random
 # --- User Settings ---
 base_dir = "/data1/dnicho26/EMG_DATASET"
 raw_dir = os.path.join(base_dir, "data/data")          # where raw CSVs reside
-processed_dir = os.path.join(base_dir, "data/processed")
+processed_dir = os.path.join(base_dir, "processed")
 os.makedirs(processed_dir, exist_ok=True)
 
 # --- Helper Functions ---
