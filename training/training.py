@@ -31,7 +31,7 @@ from utils.Trainer import Trainer
 from models.models import (
     LSTMModel, RNNModel, GRUModel, TCNModel, TemporalTransformer,
     TimeSeriesTransformer, Informer, NBeats, DBN,
-    PatchTST, CrossFormer, DLinear
+    PatchTST, CrossFormer, DLinear, HybridLSTMTransformer
 )
 
 # Import the summary utility function from metrics.py.
@@ -162,6 +162,9 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
             individual=False,
             moving_avg_kernel=25
         ).to(device)
+    elif model_name == "hybridlstmtransformer":
+        model = model_class(input_size=selected_channels, hidden_size=256, num_layers=5,
+                            num_classes=output_size, n_ahead=n_ahead_val).to(device)
     else:
         model = model_class(input_size=selected_channels, hidden_size=256, num_layers=5,
                             num_classes=output_size, n_ahead=n_ahead_val).to(device)
@@ -236,6 +239,7 @@ model_variants = {
     "crossformer": CrossFormer,
     "dlinear": DLinear,
     "timeseries_transformer": TimeSeriesTransformer,
+    "hybridlstmtransformer": HybridLSTMTransformer
 }
 
 # ----------------------------------------------------------------------------------
@@ -243,7 +247,7 @@ model_variants = {
 # ----------------------------------------------------------------------------------
 def main():
     experiments = []
-    for sensor_mode in ["emg", "all"]:
+    for sensor_mode in ["emg"]:
         for n_val in [10, 15, 20]:
             for loss_func in LOSS_TYPES:
                 for model_name, model_cls in model_variants.items():

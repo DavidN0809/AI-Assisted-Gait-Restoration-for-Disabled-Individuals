@@ -151,8 +151,8 @@ def main():
 
     # Load first sample CSV for window plotting
     sample_df = pd.read_csv(csv_files[0])
-    # window_size = 1259*3  # 3 seconds @ 10 Hz or for raw data do 1259*3, 3 second sample of emg
-    window_size = 30
+    window_size = 1259*3  # 3 seconds @ 10 Hz or for raw data do 1259*3, 3 second sample of emg
+    # window_size = 30
     overlap_fraction = 0.0
     windows = segment_windows(sample_df, window_size, overlap_fraction)
 

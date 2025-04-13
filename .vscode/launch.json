@@ -2,6 +2,14 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Run Baseline Script",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/training/baseline.py",
+            "console": "integratedTerminal",
+            "args": []
+        },
+        {
             "name": "Run Training Script (EMG Prediction)",
             "type": "debugpy",
             "request": "launch",

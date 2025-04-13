@@ -22,7 +22,7 @@ from utils.Trainer import Trainer
 from models.models import (
     LSTMModel, RNNModel, GRUModel, TCNModel, 
     TimeSeriesTransformer, TemporalTransformer, Informer, NBeats, DBN,
-    PatchTST, CrossFormer, DLinear
+    PatchTST, CrossFormer, DLinear, HybridLSTMTransformer
 )
 from utils.metrics import save_summary_csv
 
@@ -87,6 +87,9 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
             activation="relu",
             output_attention=False
         ).to(device)
+    elif model_name == "hybridlstmtransformer":
+        model = model_class(input_size=selected_channels, hidden_size=128, num_layers=3,
+                            num_classes=output_size, n_ahead=n_ahead_val).to(device)
     else:
         model = model_class(input_size=selected_channels, hidden_size=128, num_layers=3,
                             num_classes=output_size, n_ahead=n_ahead_val).to(device)
@@ -97,7 +100,7 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
     epoch_log_file = os.path.join(LOGS_DIR, f"loss_summary_{model_name}.txt")
     trainer = Trainer(model=model, lag=lag, n_ahead=n_ahead_val, optimizer=optimizer, scheduler=scheduler,
                       testloader=test_loader, fig_dir=FIGURES_DIR, loss=loss_choice, model_type=model_name,
-                      device=device, clip_grad_norm=2.0)
+                      device=device, clip_grad_norm=2.0, sensor_mode=sensor_mode)
     trainer.epoch_log_file = epoch_log_file
 
     checkpoint_dir = os.path.join(trial_dir, "checkpoints")
@@ -142,7 +145,7 @@ default_epochs = 300
 fast_lr = 1e-4
 final_lr = 7e-4
 output_size = 9
-target_sensor = "acc"
+target_sensor = "emg"
 input_sizes = {"all": 21, "emg": 3, "acc": 9, "gyro": 9}
 LOSS_TYPES = ["huber", "custom"]
 
@@ -159,6 +162,7 @@ model_variants = {
     "patchtst": PatchTST,
     "crossformer": CrossFormer,
     "dlinear": DLinear,
+    "hybridlstmtransformer": HybridLSTMTransformer
 }
 
 # ----------------------------------------------------------------------------------
@@ -166,8 +170,8 @@ model_variants = {
 # ----------------------------------------------------------------------------------
 if __name__ == "__main__":
     experiments = []
-    for sensor_mode in ["acc", "all"]:
-        for n_val in [5, 10, 15, 20]:
+    for sensor_mode in ["acc"]:
+        for n_val in [10, 15, 20]:
             for loss_func in LOSS_TYPES:
                 for model_name, model_cls in model_variants.items():
                     experiments.append((model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor))

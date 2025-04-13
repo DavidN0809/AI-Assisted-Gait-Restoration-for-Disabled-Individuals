@@ -20,23 +20,16 @@ import time
 from tqdm import tqdm
 import pandas as pd
 
-# Append parent directory to locate modules (assumes a project folder structure)
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Import your custom dataset and trainer.
 from utils.datasets import EMG_dataset
 from utils.Trainer import Trainer  
-
-# Import the summary and logging utilities from metrics.py
-from utils.metrics import save_summary_csv  # and log_epoch_loss if needed inside Trainer
-
-# Import model variants.
 from models.models import (
-    LSTMModel, RNNModel, GRUModel, TCNModel, TemporalTransformer,
-    TimeSeriesTransformer, Informer, NBeats, DBN,
-    PatchTST, CrossFormer, DLinear
+    LSTMModel, RNNModel, GRUModel, TCNModel, 
+    TimeSeriesTransformer, TemporalTransformer, Informer, NBeats, DBN,
+    PatchTST, CrossFormer, DLinear, HybridLSTMTransformer
 )
-
+from utils.metrics import save_summary_csv
 # ----------------------------------------------------------------------------------
 # Utility function to generate trial directories.
 # ----------------------------------------------------------------------------------
@@ -179,6 +172,18 @@ def run_training(model_class, model_name, csv_path, epochs, sensor_mode="emg", t
             num_channels=selected_channels,
             individual=False,
             moving_avg_kernel=25
+        ).to(device)
+    elif model_name == "hybridlstmtransformer":
+        model = HybridLSTMTransformer(
+            input_size=selected_channels,
+            lstm_hidden_size=256,    
+            lstm_layers=2,
+            d_model=128,
+            nhead=8,
+            transformer_layers=3,
+            forecast_horizon=n_ahead,
+            output_size=output_size,
+            dropout=0.1
         ).to(device)
     else:
         # Default model initialization for LSTM, GRU, RNN
@@ -360,9 +365,10 @@ input_sizes = {"all": 21, "emg": 3, "acc": 9, "gyro": 9}
 # Define model variants.
 # ----------------------------------------------------------------------------------
 model_variants = {
+    "hybridlstmtransformer": HybridLSTMTransformer,
+    "crossformer": CrossFormer,
     "informer": Informer,
     "patchtst": PatchTST,
-    "crossformer": CrossFormer,
     "dlinear": DLinear,
     "timeseries_transformer": TimeSeriesTransformer,
     "temporal_transformer": TemporalTransformer,

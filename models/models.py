@@ -1643,38 +1643,6 @@ class InformerStack(nn.Module):
         else:
             return dec_out[:,-self.pred_len:,:] # [B, L, D]
 
-import math
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-
-# --- Positional Encoding (as defined earlier) ---
-class PositionalEncoding(nn.Module):
-    """
-    Standard sinusoidal positional encoding.
-    """
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-        # Create constant 'pe' matrix with values dependent on position and dimension.
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, d_model)
-        pe[:, 0::2] = torch.sin(position * div_term)   # even indices
-        pe[:, 1::2] = torch.cos(position * div_term)   # odd indices
-        pe = pe.unsqueeze(0)  # shape: [1, max_len, d_model]
-        self.register_buffer('pe', pe)
-        
-    def forward(self, x):
-        """
-        Args:
-            x: Tensor of shape [batch_size, seq_len, d_model]
-        Returns:
-            x after adding positional encodings.
-        """
-        x = x + self.pe[:, :x.size(1)]
-        return self.dropout(x)
-
 # --- Time Series Transformer ---
 class TimeSeriesTransformer(nn.Module):
     """
@@ -1831,93 +1799,188 @@ class PatchTST(nn.Module):
 ###########################################
 # 2. CrossFormer Model
 ###########################################
+##############################################################################
+# Revised CrossFormer with Self-Supervised Pretraining,
+# Attention Pooling, and Multi-Head Forecasting
+##############################################################################
 class CrossFormer(nn.Module):
     """
-    CrossFormer: A dual-branch Transformer that models both temporal dynamics and 
-    inter-channel (cross-dimensional) dependencies for time series forecasting.
-    
-    It contains two branches:
-      - A temporal branch that processes the time dimension via a Transformer encoder.
-      - A channel branch that processes across channels (features) via a separate Transformer.
-    
-    Their outputs are fused to produce a forecast.
+    Revised CrossFormer: A dual-branch Transformer for time series forecasting enhanced with:
+      - Self-supervised pretraining via an extra projection head.
+      - Attention pooling (in addition to mean and max pooling) to weight aggregated tokens.
+      - Multiple forecast heads (one per output channel) for finer modeling.
     
     Args:
-        input_channels: Number of input features (channels).
-        seq_len: Length of the input time series.
-        d_model: Transformer model dimension for both branches.
-        nhead: Number of attention heads.
-        num_layers: Number of encoder layers in each branch.
-        dim_feedforward: Feed-forward network dimension.
-        dropout: Dropout rate.
-        forecast_horizon: Number of time steps to forecast.
-        output_size: Number of output features.
+        input_channels (int): Number of input features.
+        seq_len (int): Length of the input time series.
+        d_model (int, optional): Dimension of the model embeddings. Default is 64.
+        nhead (int, optional): Number of attention heads in Transformer layers. Default is 8.
+        num_layers (int, optional): Number of Transformer encoder layers per branch. Default is 3.
+        dim_feedforward (int, optional): Hidden dimension of the encoder layers. Default is 256.
+        dropout (float, optional): Dropout rate. Default is 0.1.
+        forecast_horizon (int, optional): Number of future time steps to forecast. Default is 10.
+        output_size (int, optional): Number of output features/channels. Default is 1.
+        pooling_method (str, optional): Pooling type to use ("mean", "max", or "attention"). Default is "mean".
+        self_supervised (bool, optional): Whether to enable self-supervised pretraining head. Default is False.
+        pretrain_dim (int, optional): Projection dimension for the self-supervised head. Default is d_model.
     """
     def __init__(self, input_channels, seq_len, d_model=64, nhead=8, num_layers=3, 
-                 dim_feedforward=256, dropout=0.1, forecast_horizon=10, output_size=1):
+                 dim_feedforward=256, dropout=0.1, forecast_horizon=10, output_size=1, 
+                 pooling_method="mean", self_supervised=False, pretrain_dim=None):
         super(CrossFormer, self).__init__()
         self.seq_len = seq_len
         self.input_channels = input_channels
         self.forecast_horizon = forecast_horizon
+        self.output_size = output_size
+        self.d_model = d_model
+        self.pooling_method = pooling_method.lower()
+        self.self_supervised = self_supervised
+        if pretrain_dim is None:
+            pretrain_dim = d_model
 
-        # Temporal branch: process along the time dimension
+        # ----------------------------
+        # Temporal Branch
+        # ----------------------------
         self.temporal_projection = nn.Linear(input_channels, d_model)
         self.temporal_pos_encoding = PositionalEncoding(d_model, dropout=dropout, max_len=seq_len)
-        temporal_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, 
-                                                    dim_feedforward=dim_feedforward, 
-                                                    dropout=dropout)
-        self.temporal_encoder = nn.TransformerEncoder(temporal_layer, num_layers=num_layers)
-
-        # Channel branch: process along the channel dimension.
-        # Transpose input so that each channel’s temporal information is projected.
+        temporal_encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, 
+            dropout=dropout, activation="relu", batch_first=True
+        )
+        self.temporal_encoder = nn.TransformerEncoder(temporal_encoder_layer, num_layers=num_layers)
+        
+        # ----------------------------
+        # Channel Branch
+        # ----------------------------
+        # Transpose input so that each channel's entire time series is a token.
         self.channel_projection = nn.Linear(seq_len, d_model)
         self.channel_pos_encoding = PositionalEncoding(d_model, dropout=dropout, max_len=input_channels)
-        channel_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, 
-                                                   dim_feedforward=dim_feedforward, 
-                                                   dropout=dropout)
-        self.channel_encoder = nn.TransformerEncoder(channel_layer, num_layers=num_layers)
-
-        # Fusion layer: combine the aggregated representations from both branches.
-        self.fusion_fc = nn.Linear(d_model * 2, d_model)
+        channel_encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=dim_feedforward, 
+            dropout=dropout, activation="relu", batch_first=True
+        )
+        self.channel_encoder = nn.TransformerEncoder(channel_encoder_layer, num_layers=num_layers)
         
-        # Forecast head: project the fused representation to forecast outputs.
-        self.fc = nn.Linear(d_model, forecast_horizon * output_size)
-
+        # ----------------------------
+        # Attention Pooling Parameters
+        # ----------------------------
+        # If attention pooling is selected, use learnable vectors.
+        if self.pooling_method == "attention":
+            self.temporal_attn_vector = nn.Parameter(torch.randn(d_model, 1))
+            self.channel_attn_vector = nn.Parameter(torch.randn(d_model, 1))
+        
+        # ----------------------------
+        # Fusion and Forecast Head
+        # ----------------------------
+        self.fusion_fc = nn.Linear(d_model * 2, d_model)
+        self.fusion_norm = nn.LayerNorm(d_model)
+        self.fusion_dropout = nn.Dropout(dropout)
+        # Create one forecast head (linear layer) per output channel.
+        self.fc = nn.ModuleList([nn.Linear(d_model, forecast_horizon) for _ in range(output_size)])
+        
+        # ----------------------------
+        # Self-supervised Pretraining Head
+        # ----------------------------
+        if self_supervised:
+            self.pretrain_head = nn.Sequential(
+                nn.Linear(d_model, d_model),
+                nn.ReLU(),
+                nn.Linear(d_model, pretrain_dim)
+            )
+        
+        # ----------------------------
+        # Weight Initialization
+        # ----------------------------
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize all linear layers with Xavier uniform initialization."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+    
+    def _pooling(self, x, branch):
+        """
+        Pool over the sequence dimension using the specified pooling method.
+        
+        Args:
+            x (Tensor): Input tensor of shape [B, L, d_model] (if branch=="temporal")
+                        or [B, C, d_model] (if branch=="channel").
+            branch (str): "temporal" or "channel", used to select the appropriate attention vector.
+        
+        Returns:
+            Tensor: Aggregated tensor of shape [B, d_model].
+        """
+        if self.pooling_method == "mean":
+            return x.mean(dim=1)
+        elif self.pooling_method == "max":
+            return x.max(dim=1)[0]
+        elif self.pooling_method == "attention":
+            if branch == "temporal":
+                # x: [B, L, d_model], attn: [d_model, 1]
+                scores = torch.matmul(x, self.temporal_attn_vector)  # [B, L, 1]
+            elif branch == "channel":
+                scores = torch.matmul(x, self.channel_attn_vector)  # [B, C, 1]
+            else:
+                raise ValueError("Invalid branch type. Use 'temporal' or 'channel'.")
+            weights = F.softmax(scores, dim=1)  # normalize across time or channels
+            pooled = torch.sum(x * weights, dim=1)
+            return pooled
+        else:
+            raise ValueError("Unsupported pooling method. Choose 'mean', 'max', or 'attention'.")
+    
     def forward(self, x):
         """
+        Forward pass.
+        
         Args:
-            x: Input tensor of shape [batch_size, seq_len, input_channels]
+            x (Tensor): Input tensor with shape [B, seq_len, input_channels].
+            
         Returns:
-            Forecast tensor of shape [batch_size, forecast_horizon, output_size]
+            If self_supervised is False:
+                Tensor: Forecast tensor with shape [B, forecast_horizon, output_size].
+            Else:
+                Tuple: (forecast tensor, self-supervised representation)
+                where self-supervised representation has shape [B, pretrain_dim].
         """
         B, L, C = x.shape
-        # ---- Temporal Branch ----
-        # Project input (per time step) from input_channels to d_model
-        temporal_input = self.temporal_projection(x)  # shape: (B, L, d_model)
-        temporal_input = self.temporal_pos_encoding(temporal_input)
-        temporal_out = self.temporal_encoder(temporal_input)  # shape: (B, L, d_model)
-        # Aggregate via the last time step (alternatively, use pooling)
-        temporal_repr = temporal_out[:, -1, :]  # shape: (B, d_model)
-
-        # ---- Channel Branch ----
-        # Transpose to process each channel’s temporal pattern:
-        channel_input = x.transpose(1, 2)  # shape: (B, C, L)
-        # Project each channel’s series: linear layer mapping L -> d_model.
-        # Here, for each channel token we treat the entire window as a feature vector.
-        channel_input = self.channel_projection(channel_input)  # shape: (B, C, d_model)
-        channel_input = self.channel_pos_encoding(channel_input)
-        channel_out = self.channel_encoder(channel_input)  # shape: (B, C, d_model)
-        # Aggregate via the last channel token (or use an appropriate pooling method)
-        channel_repr = channel_out[:, -1, :]  # shape: (B, d_model)
-
-        # ---- Fusion ----
-        fusion = torch.cat([temporal_repr, channel_repr], dim=-1)  # (B, 2*d_model)
-        fusion = self.fusion_fc(fusion)  # (B, d_model)
-
-        # Forecast head
-        out = self.fc(fusion)  # shape: (B, forecast_horizon * output_size)
-        out = out.view(B, self.forecast_horizon, -1)
-        return out
+        # -------- Temporal Branch --------
+        # Project and encode over time.
+        temporal_input = self.temporal_projection(x)               # (B, L, d_model)
+        temporal_input = self.temporal_pos_encoding(temporal_input)   # (B, L, d_model)
+        temporal_out = self.temporal_encoder(temporal_input)          # (B, L, d_model)
+        temporal_repr = self._pooling(temporal_out, branch="temporal")  # (B, d_model)
+        
+        # -------- Channel Branch --------
+        # Transpose so that each channel becomes a token.
+        channel_input = x.transpose(1, 2)                            # (B, input_channels, seq_len)
+        channel_input = self.channel_projection(channel_input)       # (B, input_channels, d_model)
+        channel_input = self.channel_pos_encoding(channel_input)       # (B, input_channels, d_model)
+        channel_out = self.channel_encoder(channel_input)            # (B, input_channels, d_model)
+        channel_repr = self._pooling(channel_out, branch="channel")    # (B, d_model)
+        
+        # -------- Fusion --------
+        fusion = torch.cat([temporal_repr, channel_repr], dim=-1)     # (B, 2*d_model)
+        fusion = self.fusion_fc(fusion)                              # (B, d_model)
+        fusion = F.relu(fusion)
+        fusion = self.fusion_norm(fusion)
+        fusion = self.fusion_dropout(fusion)
+        
+        # -------- Forecast Heads --------
+        forecasts = []
+        for head in self.fc:
+            out = head(fusion)      # (B, forecast_horizon)
+            forecasts.append(out.unsqueeze(-1))  # (B, forecast_horizon, 1)
+        forecast_output = torch.cat(forecasts, dim=-1)  # (B, forecast_horizon, output_size)
+        
+        if self.self_supervised:
+            # Compute self-supervised representation from fused feature.
+            pretrain_rep = self.pretrain_head(fusion)  # (B, pretrain_dim)
+            return forecast_output, pretrain_rep
+        else:
+            return forecast_output
 
 ###########################################
 # 3. DLinear Model
@@ -2011,4 +2074,88 @@ class DLinear(nn.Module):
         
         # Combine trend and seasonal components.
         out = trend_out + seasonal_out  # (B, forecast_horizon, C)
+        return out
+
+# PositionalEncoding as used in transformer architectures.
+class PositionalEncoding(nn.Module):
+    """
+    Standard sinusoidal positional encoding.
+    """
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)  # (max_len, 1)
+        div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, d_model, dtype=torch.float)
+        pe[:, 0::2] = torch.sin(position * div_term)  # apply sine on even indices
+        pe[:, 1::2] = torch.cos(position * div_term)  # apply cosine on odd indices
+        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        # x: (batch_size, seq_len, d_model)
+        x = x + self.pe[:, :x.size(1)]
+        return self.dropout(x)
+
+# Hybrid model combining LSTM and Transformer
+class HybridLSTMTransformer(nn.Module):
+    def __init__(self, input_size, lstm_hidden_size, lstm_layers, 
+                 d_model, nhead, transformer_layers,
+                 forecast_horizon, output_size, dropout=0.1):
+        """
+        Args:
+            input_size (int): Number of features in the input time series.
+            lstm_hidden_size (int): Hidden state dimension for LSTM.
+            lstm_layers (int): Number of LSTM layers.
+            d_model (int): Dimension used inside the Transformer.
+            nhead (int): Number of attention heads in Transformer layers.
+            transformer_layers (int): Number of Transformer encoder layers.
+            forecast_horizon (int): Number of future timesteps to predict.
+            output_size (int): Number of outputs per timestep.
+            dropout (float): Dropout probability.
+        """
+        super(HybridLSTMTransformer, self).__init__()
+        # LSTM component to capture local temporal dependencies.
+        self.lstm = nn.LSTM(input_size, lstm_hidden_size, num_layers=lstm_layers, 
+                            batch_first=True, dropout=dropout)
+        
+        # Project LSTM output (hidden state from each timestep) to transformer dimension.
+        self.input_projection = nn.Linear(lstm_hidden_size, d_model)
+        self.positional_encoding = PositionalEncoding(d_model, dropout=dropout)
+        
+        # Transformer component: process the projected sequence to capture global context.
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, 
+                                                    dropout=dropout, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=transformer_layers)
+        
+        # For fusion, we use both the last LSTM hidden state and a global (e.g. mean-pooled) transformer feature.
+        self.fusion_fc = nn.Linear(lstm_hidden_size + d_model, lstm_hidden_size)
+        self.fusion_activation = nn.ReLU()
+        
+        # Forecast head: Predict forecast_horizon * output_size from the fused features.
+        self.fc_out = nn.Linear(lstm_hidden_size, forecast_horizon * output_size)
+        self.forecast_horizon = forecast_horizon
+        self.output_size = output_size
+
+    def forward(self, x):
+        # x: [batch, seq_len, input_size]
+        # LSTM passes the entire sequence.
+        lstm_out, (hn, cn) = self.lstm(x)  # lstm_out: [batch, seq_len, lstm_hidden_size]
+        # Use the final time step hidden state of LSTM (hn[-1]) as local feature.
+        lstm_last = hn[-1]  # [batch, lstm_hidden_size]
+        
+        # For the Transformer, we project the LSTM outputs for all timesteps.
+        proj = self.input_projection(lstm_out)  # [batch, seq_len, d_model]
+        proj = self.positional_encoding(proj)
+        transformer_out = self.transformer(proj)  # [batch, seq_len, d_model]
+        # Aggregate transformer outputs via mean pooling.
+        transformer_feat = transformer_out.mean(dim=1)  # [batch, d_model]
+        
+        # Concatenate LSTM local features and transformer global feature.
+        fusion = torch.cat([lstm_last, transformer_feat], dim=-1)  # [batch, lstm_hidden_size + d_model]
+        fusion = self.fusion_activation(self.fusion_fc(fusion))  # [batch, lstm_hidden_size]
+        
+        # Generate forecast with the forecast head.
+        out = self.fc_out(fusion)  # [batch, forecast_horizon * output_size]
+        out = out.view(-1, self.forecast_horizon, self.output_size)  # [batch, forecast_horizon, output_size]
         return out

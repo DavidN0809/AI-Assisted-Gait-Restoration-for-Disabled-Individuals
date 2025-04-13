@@ -26,7 +26,7 @@ from utils.Trainer import Trainer
 from models.models import (
     LSTMModel, RNNModel, GRUModel, TCNModel,
     TimeSeriesTransformer, TemporalTransformer, Informer, NBeats, DBN,
-    PatchTST, CrossFormer, DLinear
+    PatchTST, CrossFormer, DLinear, HybridLSTMTransformer
 )
 from utils.metrics import save_summary_csv
 
@@ -102,12 +102,15 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
             activation="relu",
             output_attention=False
         ).to(device)
+    elif model_name == "hybridlstmtransformer":
+        model = model_class(input_size=selected_channels, hidden_size=256, num_layers=5,
+                            num_classes=output_size, n_ahead=n_ahead_val).to(device)
     elif model_name == "dbn":
         flattened_input_size = lag * selected_channels
         sizes = [flattened_input_size, 128, 64]
         model = model_class(sizes=sizes, output_dim=output_size, n_ahead=n_ahead_val).to(device)
     else:
-        model = model_class(input_size=selected_channels, hidden_size=128, num_layers=3,
+        model = model_class(input_size=selected_channels, hidden_size=256, num_layers=5,
                             num_classes=output_size, n_ahead=n_ahead_val).to(device)
 
     if torch.cuda.device_count() > 1:
@@ -205,12 +208,13 @@ model_variants = {
     "patchtst": PatchTST,
     "crossformer": CrossFormer,
     "dlinear": DLinear,
+    "hybridlstmtransformer": HybridLSTMTransformer
 }
 
 if __name__ == "__main__":
     experiments = []
-    for sensor_mode in ["emg", "all"]:
-        for n_val in [5, 10, 15, 20]:
+    for sensor_mode in ["emg"]:
+        for n_val in [10, 15, 20]:
             for loss_func in LOSS_TYPES:
                 for model_name, model_cls in model_variants.items():
                     experiments.append((model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor))

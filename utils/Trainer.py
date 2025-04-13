@@ -13,13 +13,18 @@ from .plot_styles import (
     GROUND_TRUTH_LINESTYLE, PREDICTION_LABEL, GROUND_TRUTH_LABEL, 
     get_sensor_style, get_channel_color
 )
+import torch.nn.functional as F
 
-def custom_loss(predictions, targets, variation_weight=0.3, eps=1e-5):
-    # MAPE calculation
+def custom_loss_with_flat_penalty(predictions, targets, 
+                                  variation_weight=0.3,
+                                  flat_penalty_weight=0.1,
+                                  flat_threshold=1e-3,
+                                  eps=1e-5):
+    # Calculate Mean Absolute Percentage Error (MAPE)
     percentage_errors = torch.abs((targets - predictions) / (targets + eps))
     mape_loss = percentage_errors.mean()
-    
-    # Only compute variation loss if there is more than one forecast time step
+
+    # Variation loss encourages matching the target variation
     if predictions.shape[1] > 1:
         pred_diff = torch.abs(predictions[:, 1:, :] - predictions[:, :-1, :])
         target_diff = torch.abs(targets[:, 1:, :] - targets[:, :-1, :])
@@ -27,7 +32,16 @@ def custom_loss(predictions, targets, variation_weight=0.3, eps=1e-5):
     else:
         variation_loss = 0.0
 
-    return mape_loss + variation_weight * variation_loss
+    # Flat prediction penalty: compute the standard deviation along the forecast horizon
+    # For each sample and channel (shape: [batch, channels]), if the std is lower than flat_threshold,
+    # we incur a penalty.
+    pred_std = predictions.std(dim=1)  # [batch, channels]
+    flat_penalty = F.relu(flat_threshold - pred_std).mean()
+
+    # The final loss aggregates all parts.
+    loss = mape_loss + variation_weight * variation_loss + flat_penalty_weight * flat_penalty
+    return loss
+
 
 class EarlyStopping:
     """
@@ -117,7 +131,7 @@ class Trainer:
         device="cpu",
         is_classification=False,
         clip_grad_norm=0,
-        sensor_mode="emg",  # Add sensor_mode parameter with default value
+        sensor_mode="emg",  # Update default value to "acc"
         epoch_log_file=None,
         **kwargs
     ):
