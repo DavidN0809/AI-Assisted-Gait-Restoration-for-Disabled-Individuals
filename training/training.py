@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+"""
+training.py - Standard Training Script with Multiple Loss Functions, n_ahead values, and sensor modes.
+
+This script loops over experiments (different sensor modes, forecast horizons, and loss functions)
+and trains each model variant. At the end it saves a summary CSV using functions defined in utils/metrics.py.
+"""
+
 import os
 import sys
 import glob
@@ -8,9 +16,9 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import numpy as np
 import torch.optim as optim
-from datetime import datetime
 import time
 from tqdm import tqdm
+import pandas as pd
 
 # Append parent directory to locate modules (assumes a project folder structure)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -20,20 +28,19 @@ from utils.datasets import EMG_dataset
 from utils.Trainer import Trainer  
 
 # Import model variants.
-# Ensure that the new models (PatchTST, CrossFormer, DLinear) are also imported.
 from models.models import (
     LSTMModel, RNNModel, GRUModel, TCNModel, TemporalTransformer,
     TimeSeriesTransformer, Informer, NBeats, DBN,
     PatchTST, CrossFormer, DLinear
 )
 
+# Import the summary utility function from metrics.py.
+from utils.metrics import save_summary_csv
+
 # ----------------------------------------------------------------------------------
 # Utility function to generate trial directories.
-#
 # The final folder structure will be:
 #   BASE_TRIAL_DIR / sensor_mode / model_name / n_ahead / loss_type
-#
-# For example: trials/all/lstm/1/mse/figures
 # ----------------------------------------------------------------------------------
 def get_trial_dir(model_name, loss_type, sensor_mode, n_ahead_val=None):
     if n_ahead_val is not None:
@@ -44,14 +51,14 @@ def get_trial_dir(model_name, loss_type, sensor_mode, n_ahead_val=None):
     return trial_dir
 
 # ----------------------------------------------------------------------------------
-# Standard training function for a given sensor mode.
+# Main training function for a given sensor mode.
 # ----------------------------------------------------------------------------------
 def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=None, target_sensor="emg"):
     print(f"Starting training: {model_name} (n_ahead = {n_ahead_val}) using input: {sensor_mode} with {loss_choice} loss")
     # Get the number of channels based on input sensor type.
     selected_channels = input_sizes[sensor_mode]
 
-    # Our dataset is assumed to use CSV indices stored in 'train_index.csv', etc.
+    # Dataset index files.
     train_index = os.path.join(base_dir, "train_index.csv")
     val_index   = os.path.join(base_dir, "val_index.csv")
     test_index  = os.path.join(base_dir, "test_index.csv")
@@ -80,45 +87,42 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
     )
     test_dataset = EMG_dataset(
         processed_index_csv=test_index, lag=lag, n_ahead=n_ahead_val,
-        input_sensor=sensor_mode, target_sensor=target_sensor, 
+        input_sensor=sensor_mode, target_sensor=target_sensor,
         base_dir=base_dir, keep_time=keep_time
     )
-
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
     val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
     test_loader  = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
     
-    # Instantiate the model based on the model name.
+    # Instantiate the model.
     if model_name == "tcn":
         model = model_class(input_channels=selected_channels, num_classes=output_size, n_ahead=n_ahead_val).to(device)
     elif model_name == "timeseries_transformer":
-        # TimeSeriesTransformer expects output_size
         model = model_class(input_size=selected_channels, output_size=output_size, n_ahead=n_ahead_val).to(device)
     elif model_name == "temporal_transformer":
-        # TemporalTransformer expects num_classes
         model = model_class(input_size=selected_channels, num_classes=output_size, n_ahead=n_ahead_val).to(device)
     elif model_name == "nbeats":
         flattened_input_size = lag * selected_channels
         model = model_class(
-            input_size=flattened_input_size, 
-            num_stacks=3, 
-            num_blocks_per_stack=3, 
+            input_size=flattened_input_size,
+            num_stacks=3,
+            num_blocks_per_stack=3,
             num_layers=4,
-            hidden_size=256, 
-            output_size=output_size, 
+            hidden_size=256,
+            output_size=output_size,
             n_ahead=n_ahead_val
         ).to(device)
     elif model_name == "informer":
         label_len = lag // 2  
         model = model_class(
-            enc_in=selected_channels,            # encoder input dimension
-            dec_in=selected_channels,            # decoder input dimension
-            c_out=output_size,                   # output feature dimension
-            seq_len=lag,                         # total input sequence length
-            label_len=label_len,                 # decoder conditioning length
-            out_len=n_ahead_val,                 # forecast horizon
-            activation="relu",                   
-            output_attention=False               
+            enc_in=selected_channels,
+            dec_in=selected_channels,
+            c_out=output_size,
+            seq_len=lag,
+            label_len=label_len,
+            out_len=n_ahead_val,
+            activation="relu",
+            output_attention=False
         ).to(device)
     elif model_name == "dbn":
         flattened_input_size = lag * selected_channels
@@ -126,7 +130,6 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
         model = model_class(sizes=sizes, output_dim=output_size, n_ahead=n_ahead_val).to(device)
         print("Starting DBN pretraining...")
         model.pretrain(train_loader, num_epochs=10, batch_size=batch_size, verbose=True)
-    # --- New Models ---
     elif model_name == "patchtst":
         model = model_class(
             input_channels=selected_channels,
@@ -160,15 +163,13 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
             moving_avg_kernel=25
         ).to(device)
     else:
-        # Default to recurrent models (LSTM, RNN, GRU, etc.)
         model = model_class(input_size=selected_channels, hidden_size=256, num_layers=5,
                             num_classes=output_size, n_ahead=n_ahead_val).to(device)
-
 
     if torch.cuda.device_count() > 1:
         model = nn.DataParallel(model)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=fast_lr, weight_decay=1e-5)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=fast_lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer,
                                                   lr_lambda=lambda epoch: (epoch+1)/5 if epoch < 5 else final_lr/fast_lr)
 
@@ -178,103 +179,50 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
                       lag=lag, n_ahead=n_ahead_val)
     trainer.epoch_log_file = epoch_log_file
 
-    # Checkpointing: resume if previous checkpoints exist.
+    # Checkpointing.
     checkpoint_dir = os.path.join(trial_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
-    epoch_checkpoint_pattern = checkpoint_dir + "/checkpoint_epoch_*.pt"
+    epoch_checkpoint_pattern = os.path.join(checkpoint_dir, "checkpoint_epoch_*.pt")
     epoch_checkpoint_files = glob.glob(epoch_checkpoint_pattern)
-    start_epoch = 1  # Default starting epoch is 1
+    start_epoch = 1
     if epoch_checkpoint_files:
         latest_checkpoint_file = max(epoch_checkpoint_files, key=lambda x: int(re.findall(r'epoch_(\d+)\.pt', x)[0]))
         checkpoint = torch.load(latest_checkpoint_file)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
-        print(f"Resuming from epoch {start_epoch} for {model_name}/{loss_choice} with input {sensor_mode} ...")
+        print(f"Resuming training from epoch {start_epoch}")
     else:
         print("No epoch checkpoints found. Starting training from epoch 1.")
 
-    remaining_epochs = default_epochs - start_epoch + 1
-    loss_curve = f'{trial_dir}_{n_ahead_val}_{loss_choice}.png'
-
-    # Pass the start_epoch parameter to the Trainer's fit method.
-    metrics = trainer.fit(train_loader=train_loader, 
-                          val_loader=val_loader, 
-                          epochs=default_epochs,
-                          checkpoint_dir=MODELS_DIR, 
-                          patience=10, 
-                          min_delta=0.0,
-                          loss_curve_path=loss_curve,
-                          start_epoch=start_epoch)
+    trainer.fit(train_loader, val_loader, epochs=default_epochs - start_epoch, patience=10, min_delta=0.0,
+                checkpoint_dir=checkpoint_dir, loss_curve_path=os.path.join(trial_dir, "loss_curve.png"))
     
-    test_save_path = os.path.join(trial_dir, "test_results.png")
-    trainer.Test_Model(test_loader, test_save_path)
-    val_plot_path = os.path.join(trial_dir, "validation_results.png")
-    trainer.plot_validation_results(val_loader, val_plot_path)
+    # Return final metrics from the trainer.
+    return trainer.Metrics
 
-    final_model_path = os.path.join(MODELS_DIR, f"model_{model_name}.pt")
-    torch.save(model.state_dict(), final_model_path)
-    print(f"Final model saved to {final_model_path}")
-    
-    # ------------------------------
-    # ONNX Exporting (optional)
-    # ------------------------------
-    # model_for_export = model.module if hasattr(model, "module") else model
-    # model_for_export.eval()
-    # dummy_input = torch.randn(1, lag, selected_channels, device=device)
-    # onnx_model_path = os.path.join(MODELS_DIR, f"model_{model_name}.onnx")
-    # torch.onnx.export(
-    #     model_for_export,
-    #     dummy_input,
-    #     onnx_model_path,
-    #     input_names=['input'],
-    #     output_names=['output'],
-    #     dynamic_axes={
-    #         'input': {0: 'batch_size', 1: 'seq_len'},
-    #         'output': {0: 'batch_size', 1: 'seq_len'}
-    #     },
-    #     opset_version=14
-    # )
-    # print(f"ONNX model exported to {onnx_model_path}")
-    
-    return metrics
-
-def train_model(model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor):
-    """Wrapper function to run training with proper logging."""
-    print(f"\nStarting training for: {model_name} (sensor: {sensor_mode}, n_ahead: {n_val}, loss: {loss_func})")
-    return run_training(model_cls, model_name, loss_func, sensor_mode, n_val, target_sensor)
+def test_model(model_name, model_class, loss_choice, sensor_mode, n_ahead_val, target_sensor="emg"):
+    print(f"\nStarting training for: {model_name}")
+    return run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val, target_sensor)
 
 # ----------------------------------------------------------------------------------
 # DEVICE / PATH CONFIGURATION & HYPERPARAMETERS
 # ----------------------------------------------------------------------------------
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
-# Define the base folder for trials.
 BASE_TRIAL_DIR = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/trials"
 os.makedirs(BASE_TRIAL_DIR, exist_ok=True)
-
-# Define the base directory for your dataset.
 base_dir = "/data1/dnicho26/EMG_DATASET/final-data/"
-
-lag = 30         # Length of the sliding window.
+lag = 30         # Sliding window length.
 n_ahead = 10     # Default forecast horizon.
 batch_size = 12
 default_epochs = 300
 fast_lr = 1e-4
 final_lr = 7e-4
 output_size = 3
-target_sensor = "emg"  
-
-# Define input sizes (number of channels) for each sensor mode.
+target_sensor = "emg"
 input_sizes = {"all": 21, "emg": 3, "acc": 9, "gyro": 9}
+LOSS_TYPES = ["huber", "mse", "custom"]
 
-# Define loss function types.
-LOSS_TYPES = ["huber", "mse", "smoothl1", "custom"]
-
-# ----------------------------------------------------------------------------------
-# Define model variants.
-# The dictionary now includes the new models: patchtst, crossformer, and dlinear.
-# ----------------------------------------------------------------------------------
 model_variants = {
     "informer": Informer,
     "temporal_transformer": TemporalTransformer,
@@ -291,26 +239,34 @@ model_variants = {
 }
 
 # ----------------------------------------------------------------------------------
-# Main Execution Block: Loop over sensor modes, forecast horizons, loss functions, and models.
+# Main Execution Block: Loop over experiments.
 # ----------------------------------------------------------------------------------
-if __name__ == "__main__":
-    print(f"Starting training on device: {device}")
-    sensor_modes = ["emg", "all"]
-    n_ahead_values = [5, 10, 15, 20]
-
-    # Generate all experiment combinations.
+def main():
     experiments = []
-    for sensor_mode in sensor_modes:
-        for n_val in n_ahead_values:
+    for sensor_mode in ["emg", "all"]:
+        for n_val in [10, 15, 20]:
             for loss_func in LOSS_TYPES:
                 for model_name, model_cls in model_variants.items():
-                    experiments.append((model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor))
-
+                    experiments.append((model_name, model_cls, loss_func, sensor_mode, n_val, globals()['target_sensor']))
     print(f"Total experiments: {len(experiments)}")
-    
-    # Run experiments sequentially.
-    for model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor in experiments:
-        train_model(model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor)
-        print(f"Completed training for {model_name} with {loss_func} loss")
 
+    results = []
+    for model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor in experiments:
+        metrics_dict = test_model(model_name, model_cls, loss_func, sensor_mode, n_val, target_sensor)
+        if metrics_dict is not None:
+            metrics_dict.update({
+                'model': model_name,
+                'loss_type': loss_func,
+                'sensor_mode': sensor_mode,
+                'n_ahead': n_val
+            })
+            results.append(metrics_dict)
+            print(f"Completed training for {model_name} with {loss_func} loss")
+        else:
+            print(f"Failed training for {model_name} with {loss_func} loss")
+    
+    save_summary_csv(results, BASE_TRIAL_DIR)
     print("\nAll training runs completed!")
+
+if __name__ == "__main__":
+    main()

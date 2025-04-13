@@ -25,6 +25,7 @@ from torch.utils.data import DataLoader
 # Import your dataset and model classes
 from utils.datasets import EMG_dataset
 from models.models import BasicLSTM  # change as needed if using another model variant
+from utils.plot_styles import plot_prediction_vs_ground_truth
 
 # Set device
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -118,14 +119,25 @@ true = sample_Y.numpy()
 # -------------------------
 # Plotting: Prediction vs Ground Truth
 # -------------------------
-plt.figure(figsize=(10, 6))
 for ch in range(output_size):
-    plt.plot(true[:, ch], label=f"Sensor {ch} EMG Actual")
-    plt.plot(pred[:, ch], label=f"Sensor {ch} EMG Predicted", linestyle="--")
-plt.xlabel("Time Step")
-plt.ylabel("EMG Signal Value")
-plt.title("Prediction vs Ground Truth (Inference)")
-plt.legend()
+    plt.figure(figsize=(10, 6))
+    plot_prediction_vs_ground_truth(
+        pred[:, ch],
+        true[:, ch],
+        title=f"Prediction vs Ground Truth - Sensor {ch}"
+    )
+    plt.savefig(f"/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/inference_sensor_{ch}.png")
+    plt.close()
+
+# Create a combined plot for all sensors
+plt.figure(figsize=(15, 10))
+for ch in range(output_size):
+    plt.subplot(output_size, 1, ch + 1)
+    plot_prediction_vs_ground_truth(
+        pred[:, ch],
+        true[:, ch],
+        title=f"Sensor {ch}"
+    )
 plt.tight_layout()
-plt.show()
-plt.savefig("/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/inference.png")
+plt.savefig("/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/inference_combined.png")
+plt.close()

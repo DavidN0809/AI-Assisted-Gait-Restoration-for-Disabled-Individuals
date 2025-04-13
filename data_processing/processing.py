@@ -118,16 +118,16 @@ def preprocess_csv_file(input_csv, input_base_dir, output_base_dir, target_hz=10
     else:
         print(f"File too short to drop samples: {len(df_resampled)} samples")
 
-    # # # 3. Normalize each column after resampling
-    # normalized_data = {}
-    # for col in df_resampled.columns:
-    #     series = df_resampled[col]
-    #     col_min = series.min()
-    #     col_max = series.max()
-    #     if col_max - col_min != 0:
-    #         normalized_data[col] = (series - col_min) / (col_max - col_min)
-    #     else:
-    #         normalized_data[col] = pd.Series(np.zeros_like(series), index=series.index)
+    # 3. Normalize each column after resampling
+    normalized_data = {}
+    for col in df_resampled.columns:
+        series = df_resampled[col]
+        col_min = series.min()
+        col_max = series.max()
+        if col_max - col_min != 0:
+            normalized_data[col] = (series - col_min) / (col_max - col_min)
+        else:
+            normalized_data[col] = pd.Series(np.zeros_like(series), index=series.index)
     
     # Create final DataFrame with normalized data
     df_normalized = pd.DataFrame(normalized_data)
@@ -295,8 +295,8 @@ def process_data(input_dir, output_dir, target_hz=10, outlier_threshold=3, train
 
 if __name__ == "__main__":
     # Configuration variables
-    input_dir = "/data1/dnicho26/EMG_DATASET/data/processed"
-    output_dir = "/data1/dnicho26/EMG_DATASET/final-data-not-norm/"
+    input_dir = "/data1/dnicho26/EMG_DATASET/processed"
+    output_dir = "/data1/dnicho26/EMG_DATASET/final-data/"
     target_hz = 10
     outlier_threshold = 3
     train_ratio = 0.6  # Updated to 60%
