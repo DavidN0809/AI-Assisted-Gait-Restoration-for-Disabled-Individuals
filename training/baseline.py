@@ -388,7 +388,7 @@ def main():
     print(f"Testing with n_ahead = {n_ahead}")
     
     # Find a single CSV file to use for testing.
-    csv_path = "/data1/dnicho26/EMG_DATASET/final-data/1/walk and turn left/1738795743.3349926.csv"
+    csv_path = "/data1/dnicho26/EMG_DATASET/final-data/2/treadmill/1740952466.7207062.csv"
     
     # Ensure the file exists.
     if not os.path.exists(csv_path):

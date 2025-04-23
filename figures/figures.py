@@ -1,169 +1,127 @@
 import os
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from glob import glob
-from tqdm import tqdm
 
 def segment_windows(df, window_size, overlap_fraction):
-    """
-    Segments the DataFrame into windows of fixed length (in number of samples)
-    with the specified fractional overlap.
-    """
     step = window_size - int(overlap_fraction * window_size)
     segments = []
     for start in range(0, len(df) - window_size + 1, step):
-        segment = df.iloc[start:start + window_size].reset_index(drop=True)
-        segments.append(segment)
+        segments.append(df.iloc[start:start + window_size].reset_index(drop=True))
     return segments
 
-def plot_windows(windows, num_windows=5, output_dir="final-data/figures/windows"):
-    """
-    Plots the first `num_windows` windows.
-    Each window gets one PNG with 4 subplots:
-      - EMG channels 0–2
-      - ACC channels 0–2
-      - GYRO channels 0–2
-      - EMG channels 3–5
-    """
+def plot_windows(windows, fs_emg, fs_acc, skip_windows, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-
-    for i in range(min(num_windows, len(windows))):
-        window = windows[i]
-
-        # Identify sensor columns
-        emg_cols = [col for col in window.columns if "emg" in col.lower()]
-        acc_cols = [col for col in window.columns if "acc" in col.lower()]
-        gyro_cols = [col for col in window.columns if "gyro" in col.lower()]
-
-        # Select indices
-        emg_0_2 = emg_cols[:3]
-        emg_3_5 = emg_cols[3:6]
-        acc_0_2 = acc_cols[:3]
-        gyro_0_2 = gyro_cols[:3]
-
-        # Create a single figure with 4 stacked subplots
-        fig, axs = plt.subplots(4, 1, figsize=(12, 10))
-        fig.suptitle(f"Window {i+1} - Sensor Overview")
-
-        if emg_0_2:
-            axs[0].plot(window[emg_0_2])
-            axs[0].set_title("EMG Channels 0–2")
-        else:
-            axs[0].axis("off")
-
-        if acc_0_2:
-            axs[1].plot(window[acc_0_2])
-            axs[1].set_title("ACC Channels 0–2")
-        else:
-            axs[1].axis("off")
-
-        if gyro_0_2:
-            axs[2].plot(window[gyro_0_2])
-            axs[2].set_title("GYRO Channels 0–2")
-        else:
-            axs[2].axis("off")
-
-        if emg_3_5:
-            axs[3].plot(window[emg_3_5])
-            axs[3].set_title("EMG Channels 3–5")
-        else:
-            axs[3].axis("off")
-
-        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
-        out_path = os.path.join(output_dir, f"window_{i+1}.png")
-        fig.savefig(out_path)
-        plt.close(fig)
-        print(f"✅ Saved combined window plot: {out_path}")
-
-def plot_histograms(csv_files, output_dir="final-data/figures/histograms"):
-    """
-    Aggregates all CSVs in the dataset and plots histograms of sensor distributions.
-    """
-    os.makedirs(output_dir, exist_ok=True)
-
-    all_data = []
-    for f in tqdm(csv_files, desc="Loading CSVs for histograms"):
-        try:
-            df = pd.read_csv(f)
-            all_data.append(df)
-        except Exception as e:
-            print(f"Failed to load {f}: {e}")
-
-    if not all_data:
-        print("No valid data loaded for histogram plotting.")
+    windows = windows[skip_windows:]
+    if not windows:
+        print("❌ No windows left after skipping.")
         return
 
-    df_full = pd.concat(all_data, axis=0, ignore_index=True)
+    window = windows[0]
+    duration = window.shape[0] / fs_emg
+    t_emg = np.arange(window.shape[0]) / fs_emg
+    n_acc = int(round(duration * fs_acc))
+    t_acc = np.linspace(0, duration, n_acc)
 
-    modalities = {'emg': [], 'acc': [], 'gyro': []}
-    for col in df_full.columns:
-        col_lower = col.lower()
-        if "emg" in col_lower:
-            modalities['emg'].append(col)
-        elif "acc" in col_lower:
-            modalities['acc'].append(col)
-        elif "gyro" in col_lower:
-            modalities['gyro'].append(col)
+    modalities = {
+        'emg':  [c for c in window.columns if 'emg'  in c.lower()],
+        'acc':  [c for c in window.columns if 'acc'  in c.lower()],
+        'gyro': [c for c in window.columns if 'gyro' in c.lower()],
+    }
 
     for modality, cols in modalities.items():
-        if cols:
-            data = df_full[cols].values.flatten()
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.hist(data, bins=50)
-            ax.set_title(f"Histogram of {modality.upper()} values (entire dataset)")
-            ax.set_xlabel("Value")
-            ax.set_ylabel("Frequency")
-            fig.tight_layout()
-            filepath = os.path.join(output_dir, f"histogram_{modality}.png")
-            fig.savefig(filepath)
-            plt.close(fig)
-            print(f"Saved {modality.upper()} histogram to {filepath}")
+        if len(cols) < 6:
+            continue
+        leg1, leg2 = cols[:3], cols[3:6]
 
-    for axis in ['acc_x', 'acc_y', 'acc_z']:
-        cols = [col for col in df_full.columns if axis in col.lower()]
-        if cols:
-            data = df_full[cols].values.flatten()
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.hist(data, bins=50)
-            ax.set_title(f"Histogram of {axis.upper()} values (entire dataset)")
-            ax.set_xlabel("Value")
-            ax.set_ylabel("Frequency")
-            fig.tight_layout()
-            filepath = os.path.join(output_dir, f"histogram_{axis}.png")
-            fig.savefig(filepath)
-            plt.close(fig)
-            print(f"Saved {axis.upper()} histogram to {filepath}")
+        fig, axs = plt.subplots(1, 2, figsize=(12, 4))
+        fig.suptitle(f"{modality.upper()} – Window #{skip_windows+1}")
 
+        if modality == 'emg':
+            data1 = window[leg1].values; data2 = window[leg2].values
+            t1 = t2 = t_emg
+        else:
+            # interpolate each channel onto t_acc
+            data1 = np.stack([np.interp(t_acc, t_emg, window[c].values) for c in leg1], axis=1)
+            data2 = np.stack([np.interp(t_acc, t_emg, window[c].values) for c in leg2], axis=1)
+            t1 = t2 = t_acc
+
+        for i in range(3):
+            axs[0].plot(t1, data1[:, i], label=f"Sensor {i}")
+            axs[1].plot(t2, data2[:, i], label=f"Sensor {i+3}")
+
+        axs[0].set_title(f"{modality.upper()} Channels 0–2")
+        axs[0].set_xlabel("Time (s)"); axs[0].set_ylabel("Value"); axs[0].legend()
+        axs[1].set_title(f"{modality.upper()} Channels 3–5")
+        axs[1].set_xlabel("Time (s)"); axs[1].set_ylabel("Value"); axs[1].legend()
+
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+        out = os.path.join(output_dir, f"{modality}_window.png")
+        fig.savefig(out); plt.close(fig)
+        print(f"✅ Saved {modality.upper()} plot: {out}")
 def main():
-    base_dir = "/data1/dnicho26/EMG_DATASET/data/data"
-    figures_dir = "/data1/dnicho26/Thesis/AI-Assisted-Gait-Restoration-for-Disabled-Individuals/figures/raw-data"
-    windows_outdir = os.path.join(figures_dir, "windows")
-    histograms_outdir = os.path.join(figures_dir, "histograms")
+    base_dir = "/data1/dnicho26/EMG_DATASET/final-data"
+    windows_outdir = (
+        "/data1/dnicho26/Thesis/"
+        "AI-Assisted-Gait-Restoration-for-Disabled-Individuals/"
+        "figures/final-data/windows"
+    )
+    fs_emg = 10 #1259.259
+    fs_acc = 10 #148.148
+    skip_windows = 0
 
-    csv_files = []
-    for num_dir in range(1, 20):
-        # Get all directories in the numbered directory
-        all_dirs = glob(os.path.join(base_dir, str(num_dir), "*"))
-        # Filter out camera directories
-        action_dirs = [d for d in all_dirs if not d.endswith("camera_0") and not d.endswith("camera_2") and not d.endswith("camera_3")]
-        for action_dir in action_dirs:
-            csv_files.extend(glob(os.path.join(action_dir, "*.csv")))
+    # 1) Get all subject folders
+    subj_folders = sorted(glob(os.path.join(base_dir, "*")))
+    if not subj_folders:
+        print("❌ No subject directories under", base_dir)
+        return
 
-    # Load first sample CSV for window plotting
-    sample_df = pd.read_csv(csv_files[0])
-    window_size = 1259*3  # 3 seconds @ 10 Hz or for raw data do 1259*3, 3 second sample of emg
-    # window_size = 30
+    # 2) Pick the first subject
+    subj_dir = subj_folders[0]
+    print("ℹ️  Using subject folder:", subj_dir)
+
+    # 3) Find action subfolders (exclude camera_*)
+    action_dirs = [
+        d for d in sorted(glob(os.path.join(subj_dir, "*")))
+        if "camera_" not in os.path.basename(d).lower()
+    ]
+    if not action_dirs:
+        print("❌ No action folders under", subj_dir)
+        return
+
+    # 4) Search each action for a CSV (recursive)
+    csv_file = None
+    for act in action_dirs:
+        found = glob(os.path.join(act, "**", "*.csv"), recursive=True)
+        if found:
+            csv_file = found[0]
+            print("ℹ️  Found CSV:", csv_file)
+            break
+
+    if not csv_file:
+        print("❌ No CSV found in any action folder.")
+        return
+
+    # 5) Load and segment
+    df = pd.read_csv(csv_file)
+    window_size      = int(fs_emg * 3)  # 3 s @ EMG rate
     overlap_fraction = 0.0
-    windows = segment_windows(sample_df, window_size, overlap_fraction)
+    windows = segment_windows(df, window_size, overlap_fraction)
+    print(f"🔍 {len(windows)} windows before skipping the first {skip_windows}")
 
-    if windows:
-        print(f"Segmented into {len(windows)} windows.")
-        plot_windows(windows, num_windows=10, output_dir=windows_outdir)
-    else:
-        print("Not enough data to segment into windows.")
+    if not windows:
+        print("❌ Not enough data for even one window.")
+        return
 
-    # Plot histograms over the entire dataset
-    plot_histograms(csv_files, output_dir=histograms_outdir)
+    # 6) Plot EMG, ACC, GYRO aligned
+    plot_windows(
+        windows,
+        fs_emg=fs_emg,
+        fs_acc=fs_acc,
+        skip_windows=skip_windows,
+        output_dir=windows_outdir
+    )
 
 if __name__ == "__main__":
     main()

@@ -15,33 +15,6 @@ from .plot_styles import (
 )
 import torch.nn.functional as F
 
-def custom_loss_with_flat_penalty(predictions, targets, 
-                                  variation_weight=0.3,
-                                  flat_penalty_weight=0.1,
-                                  flat_threshold=1e-3,
-                                  eps=1e-5):
-    # Calculate Mean Absolute Percentage Error (MAPE)
-    percentage_errors = torch.abs((targets - predictions) / (targets + eps))
-    mape_loss = percentage_errors.mean()
-
-    # Variation loss encourages matching the target variation
-    if predictions.shape[1] > 1:
-        pred_diff = torch.abs(predictions[:, 1:, :] - predictions[:, :-1, :])
-        target_diff = torch.abs(targets[:, 1:, :] - targets[:, :-1, :])
-        variation_loss = torch.abs(pred_diff - target_diff).mean()
-    else:
-        variation_loss = 0.0
-
-    # Flat prediction penalty: compute the standard deviation along the forecast horizon
-    # For each sample and channel (shape: [batch, channels]), if the std is lower than flat_threshold,
-    # we incur a penalty.
-    pred_std = predictions.std(dim=1)  # [batch, channels]
-    flat_penalty = F.relu(flat_threshold - pred_std).mean()
-
-    # The final loss aggregates all parts.
-    loss = mape_loss + variation_weight * variation_loss + flat_penalty_weight * flat_penalty
-    return loss
-
 
 class EarlyStopping:
     """
@@ -64,38 +37,38 @@ class EarlyStopping:
         self.convergence_counter = 0
         self.converged = False
 
-    def check_convergence(self, train_loss, val_loss):
-        """Check if training and validation losses have converged"""
-        if train_loss == 0 or val_loss == 0:
-            return False
-            
-        relative_diff = abs(train_loss - val_loss) / max(train_loss, val_loss)
-        
-        if relative_diff <= self.convergence_threshold:
-            self.convergence_counter += 1
-            if self.verbose:
-                print(f"Convergence counter: {self.convergence_counter}/{self.convergence_epochs}")
-            if self.convergence_counter >= self.convergence_epochs:
-                if not self.converged and self.verbose:
-                    print("Losses have converged. Starting early stopping monitoring.")
-                self.converged = True
-        else:
-            self.convergence_counter = 0
-            
-        return self.converged
+#    def check_convergence(self, train_loss, val_loss):
+#        """Check if training and validation losses have converged"""
+#        if train_loss == 0 or val_loss == 0:
+#            return False
+#            
+#        relative_diff = abs(train_loss - val_loss) / max(train_loss, val_loss)
+#        
+#        if relative_diff <= self.convergence_threshold:
+#            self.convergence_counter += 1
+#            if self.verbose:
+#                print(f"Convergence counter: {self.convergence_counter}/{self.convergence_epochs}")
+#            if self.convergence_counter >= self.convergence_epochs:
+#                if not self.converged and self.verbose:
+#                    print("Losses have converged. Starting early stopping monitoring.")
+#                self.converged = True
+#        else:
+#            self.convergence_counter = 0
+#            
+#        return self.converged
 
     def __call__(self, val_loss, train_loss, model):
         # First check convergence
-        if not self.check_convergence(train_loss, val_loss):
-            if self.verbose:
-                print("Waiting for loss convergence before monitoring early stopping.")
-            return
-            
+        #if not self.check_convergence(train_loss, val_loss):
+        #    if self.verbose:
+        #        print("Waiting for loss convergence before monitoring early stopping.")
+        #    return            
         # Only consider early stopping logic if the validation loss is below the target threshold
         if val_loss > self.target_loss:
             if self.verbose:
                 print(f"Validation loss {val_loss:.6f} is above target threshold {self.target_loss:.6f}. Not incrementing early stopping counter.")
             return
+        self.counter = 0
 
         if self.best_loss is None:
             self.best_loss = val_loss
@@ -156,7 +129,7 @@ class Trainer:
         elif loss == "huber":
             self.criterion = nn.HuberLoss(delta=0.5, reduction="none")
         elif loss == "custom":
-            self.criterion = custom_loss
+            self.criterion = custom_loss_with_flat_penalty
         else:
             raise ValueError("Invalid loss type provided.")
             
@@ -205,10 +178,12 @@ class Trainer:
             Y = Y.to(self.device)
             weight = weight.to(self.device)
         
-            if X_time is not None:
+            # only move to device if these are torch.Tensor, not a Python list
+            if isinstance(X_time, torch.Tensor):
                 X_time = X_time.to(self.device)
-            if Y_time is not None:
+            if isinstance(Y_time, torch.Tensor):
                 Y_time = Y_time.to(self.device)
+
 
             self.optimizer.zero_grad()
         
@@ -294,11 +269,12 @@ class Trainer:
                 X = X.to(self.device)
                 Y = Y.to(self.device)
             
-                if X_time is not None:
+                # only move to device if these are torch.Tensor, not a Python list
+                if isinstance(X_time, torch.Tensor):
                     X_time = X_time.to(self.device)
-                if Y_time is not None:
+                if isinstance(Y_time, torch.Tensor):
                     Y_time = Y_time.to(self.device)
-            
+
                 # Handle different model types
                 if self.model_type == "informer":
                     # Create dummy time features if needed
@@ -361,11 +337,12 @@ class Trainer:
                 X = X.to(self.device)
                 Y = Y.to(self.device)
             
-                if X_time is not None:
+                # only move to device if these are torch.Tensor, not a Python list
+                if isinstance(X_time, torch.Tensor):
                     X_time = X_time.to(self.device)
-                if Y_time is not None:
+                if isinstance(Y_time, torch.Tensor):
                     Y_time = Y_time.to(self.device)
-            
+
                 # Handle different model types
                 if self.model_type == "informer":
                     # Create dummy time features if needed
@@ -458,11 +435,13 @@ class Trainer:
             
                 X_batch = X_batch.to(self.device)
                 Y_batch = Y_batch.to(self.device)
-            
-                if X_time is not None:
+
+                # only move to device if these are torch.Tensor, not a Python list
+                if isinstance(X_time, torch.Tensor):
                     X_time = X_time.to(self.device)
-                if Y_time is not None:
+                if isinstance(Y_time, torch.Tensor):
                     Y_time = Y_time.to(self.device)
+
             
                 batch_size = X_batch.size(0)
                 for i in range(batch_size):
@@ -573,10 +552,12 @@ class Trainer:
                 X = X.to(self.device)
                 Y = Y.to(self.device)
             
-                if X_time is not None:
+                # only move to device if these are torch.Tensor, not a Python list
+                if isinstance(X_time, torch.Tensor):
                     X_time = X_time.to(self.device)
-                if Y_time is not None:
+                if isinstance(Y_time, torch.Tensor):
                     Y_time = Y_time.to(self.device)
+
             
                 # Process each sample in the batch
                 for i in range(X.size(0)):
@@ -669,11 +650,12 @@ class Trainer:
                 
                 X_batch = X_batch.to(self.device)
                 Y_batch = Y_batch.to(self.device)
-            
-                if X_time is not None:
+                # only move to device if these are torch.Tensor, not a Python list
+                if isinstance(X_time, torch.Tensor):
                     X_time = X_time.to(self.device)
-                if Y_time is not None:
+                if isinstance(Y_time, torch.Tensor):
                     Y_time = Y_time.to(self.device)
+
             
                 # Get predictions based on model type
                 if self.model_type == "informer":
@@ -744,11 +726,13 @@ class Trainer:
             
                 X = X.to(self.device)
                 Y = Y.to(self.device)
-            
-                if X_time is not None:
+                            
+                # only move to device if these are torch.Tensor, not a Python list
+                if isinstance(X_time, torch.Tensor):
                     X_time = X_time.to(self.device)
-                if Y_time is not None:
+                if isinstance(Y_time, torch.Tensor):
                     Y_time = Y_time.to(self.device)
+
             
                 # Process each sample in the batch
                 for i in range(X.size(0)):

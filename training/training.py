@@ -14,11 +14,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
-import numpy as np
-import torch.optim as optim
-import time
-from tqdm import tqdm
-import pandas as pd
 
 # Append parent directory to locate modules (assumes a project folder structure)
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -163,8 +158,17 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
             moving_avg_kernel=25
         ).to(device)
     elif model_name == "hybridlstmtransformer":
-        model = model_class(input_size=selected_channels, hidden_size=256, num_layers=5,
-                            num_classes=output_size, n_ahead=n_ahead_val).to(device)
+        model = model_class(
+            input_size=selected_channels,
+            lstm_hidden_size=256,
+            lstm_layers=5,
+            d_model=128,                # or whatever embedding size you want
+            nhead=8,                    # number of attention heads
+            transformer_layers=3,       # number of Transformer encoder layers
+            forecast_horizon=n_ahead_val,
+            output_size=output_size,
+            dropout=0.1
+        ).to(device)
     else:
         model = model_class(input_size=selected_channels, hidden_size=256, num_layers=5,
                             num_classes=output_size, n_ahead=n_ahead_val).to(device)
@@ -201,6 +205,46 @@ def run_training(model_class, model_name, loss_choice, sensor_mode, n_ahead_val=
     trainer.fit(train_loader, val_loader, epochs=default_epochs - start_epoch, patience=10, min_delta=0.0,
                 checkpoint_dir=checkpoint_dir, loss_curve_path=os.path.join(trial_dir, "loss_curve.png"))
     
+    # --- Plot sample predictions for the first batch of the test set ---
+    model.eval()
+    with torch.no_grad():
+        for batch in test_loader:
+            X, Y = batch[0], batch[1]
+            X = X.to(device)
+            Y = Y.to(device)
+            
+        if model_name == "informer":
+            B, seq_len, d_model = X.size()
+            # 1) encoder time‐marks
+            x_mark_enc = torch.zeros(B, seq_len, 5, dtype=torch.long, device=device)
+            # 2) decoder input (label_len = seq_len//2)
+            label_len = seq_len // 2
+            dec_inp = torch.zeros(B, n_ahead, d_model, device=device)
+
+        else:
+            preds = model(X)
+
+            preds = preds.detach().cpu().numpy()
+            targets = Y.detach().cpu().numpy()
+            sample_idx = 0  # Plot the first sample in the batch
+            plt.figure(figsize=(12, 8))
+            for i in range(targets.shape[2]):
+                plt.subplot(targets.shape[2], 1, i+1)
+                plt.plot(targets[sample_idx, :, i], 'b-', label=f'Actual Channel {i+1}')
+                plt.plot(preds[sample_idx, :, i], 'r--', label=f'Predicted Channel {i+1}')
+                if i == 0:
+                    plt.legend()
+            plt.suptitle(f'{model_name} Sample Prediction (n_ahead={n_ahead_val}, loss={loss_choice})')
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+            plt.savefig(os.path.join(FIGURES_DIR, f"{model_name}_sample_predictions.png"))
+            plt.close()
+    # --- End sample prediction plotting ---
+
+    test_save_path = os.path.join(trial_dir, "test_results.png")
+    trainer.Test_Model(test_loader, test_save_path)
+    val_plot_path = os.path.join(trial_dir, "validation_results.png")
+    trainer.plot_validation_results(val_loader, val_plot_path)
+    
     # Return final metrics from the trainer.
     return trainer.Metrics
 
@@ -218,28 +262,28 @@ base_dir = "/data1/dnicho26/EMG_DATASET/final-data/"
 lag = 30         # Sliding window length.
 n_ahead = 10     # Default forecast horizon.
 batch_size = 12
-default_epochs = 300
+default_epochs = 150
 fast_lr = 1e-4
 final_lr = 7e-4
 output_size = 3
 target_sensor = "emg"
 input_sizes = {"all": 21, "emg": 3, "acc": 9, "gyro": 9}
-LOSS_TYPES = ["huber", "mse", "custom"]
+LOSS_TYPES = ["huber", "mse"]
 
 model_variants = {
     "informer": Informer,
-    "temporal_transformer": TemporalTransformer,
     "dbn": DBN,
+    "hybridlstmtransformer": HybridLSTMTransformer,
+    "dlinear": DLinear,
+    "temporal_transformer": TemporalTransformer,
     "nbeats": NBeats,
     "lstm": LSTMModel,
     "rnn": RNNModel,
     "gru": GRUModel,
     "tcn": TCNModel,
+    "timeseries_transformer": TimeSeriesTransformer,
     "patchtst": PatchTST,
     "crossformer": CrossFormer,
-    "dlinear": DLinear,
-    "timeseries_transformer": TimeSeriesTransformer,
-    "hybridlstmtransformer": HybridLSTMTransformer
 }
 
 # ----------------------------------------------------------------------------------
@@ -248,7 +292,7 @@ model_variants = {
 def main():
     experiments = []
     for sensor_mode in ["emg"]:
-        for n_val in [10, 15, 20]:
+        for n_val in [15, 20]:
             for loss_func in LOSS_TYPES:
                 for model_name, model_cls in model_variants.items():
                     experiments.append((model_name, model_cls, loss_func, sensor_mode, n_val, globals()['target_sensor']))
